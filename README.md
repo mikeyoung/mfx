@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.2**, with `9` as the major version and `2` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.3**, with `9` as the major version and `3` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.2 must be 9.3.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.3 must be 9.4.
 
 ## Playback
 
@@ -43,6 +43,8 @@ Each track keeps exactly two future sounds loading while the current sound plays
 
 The app includes a manifest, offline app shell, install icons, and a service worker. Use the browser's install command to run it as a standalone PWA. Audio still requires the initial **GO!** interaction.
 
+The app shell is versioned. When the page detects a different application version from the previous visit, it removes stale shell caches, requests a service-worker update, and performs one guarded reload. Navigations use the network first with an offline cache fallback.
+
 ## Run locally
 
 The page must be served over HTTP so Web Audio, fetch, and the service worker can operate correctly.
@@ -72,6 +74,10 @@ bash "M:/backup/webdev/chaotic sound effects/deploy_mellotron.sh"
 ```
 
 The deployment script is non-destructive: it neither lists nor deletes remote files. Authentication is handled directly by curl through a local `.netrc` file; credentials are not stored in this repository.
+
+Successful deployments record SHA-256 hashes in the ignored `.deploy-state/` directory. Later deployments upload only files whose contents changed. A fresh clone without deployment state performs one complete upload before incremental deployment begins.
+
+Run `deploy_mellotron.sh --plan` to calculate the incremental upload count without accessing FTP or changing deployment state.
 
 ## Project layout
 

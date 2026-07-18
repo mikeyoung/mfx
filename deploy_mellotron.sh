@@ -6,6 +6,8 @@
 # through C:/Users/mikey/.netrc; this script never reads or prints credentials.
 
 set -euo pipefail
+PATH="${BASH%/*}:$PATH"
+export PATH
 
 readonly SRC="M:/backup/webdev/chaotic sound effects"
 readonly HOST="p1438.use1.mysecurecloudhost.com"
@@ -14,13 +16,21 @@ readonly BASE="ftp://${HOST}${REMOTE_DIR}"
 readonly LIVE="https://mikeyoung.org${REMOTE_DIR}/"
 readonly NETRC="C:/Users/mikey/.netrc"
 readonly PARALLEL_UPLOADS=4
+readonly STATE_DIR="$SRC/.deploy-state"
+readonly STATE_MANIFEST="$STATE_DIR/manifest-v1.tsv"
+readonly MODE="${1:-deploy}"
+
+if [[ "$MODE" != "deploy" && "$MODE" != "--plan" ]]; then
+  echo "Usage: $0 [--plan]" >&2
+  exit 2
+fi
 
 if [[ "$REMOTE_DIR" != "/mfx" || "$BASE" != "ftp://${HOST}/mfx" ]]; then
   echo "ERROR: remote safety check failed; refusing to deploy." >&2
   exit 1
 fi
 
-for required in curl find xargs; do
+for required in awk cp curl find mkdir mktemp mv sed sha256sum tr wc xargs; do
   command -v "$required" >/dev/null 2>&1 || {
     echo "ERROR: required command is unavailable: $required" >&2
     exit 1
@@ -31,7 +41,9 @@ done
 for site_file in index.html sw.js manifest.webmanifest icon-192.png icon-512.png VERSION; do
   [[ -f "$SRC/$site_file" ]] || { echo "ERROR: missing $SRC/$site_file" >&2; exit 1; }
 done
-[[ -f "$NETRC" ]] || { echo "ERROR: missing credential file: $NETRC" >&2; exit 1; }
+if [[ "$MODE" == "deploy" ]]; then
+  [[ -f "$NETRC" ]] || { echo "ERROR: missing credential file: $NETRC" >&2; exit 1; }
+fi
 
 # A changed sound requires regenerating index.html and sw.js before deployment.
 if [[ -n "$(find "$SRC/snd" -type f -newer "$SRC/index.html" -print -quit)" \
@@ -51,7 +63,10 @@ if [[ "$SRC/src/index.template.html" -nt "$SRC/index.html" \
 fi
 
 readonly TMP_DIR="$(mktemp -d)"
-readonly FILE_LIST="$TMP_DIR/files.list"
+readonly ALL_FILES="$TMP_DIR/all-files.list"
+readonly FILE_LIST="$TMP_DIR/changed-files.list"
+readonly CHANGED_LINES="$TMP_DIR/changed-files.txt"
+readonly CURRENT_MANIFEST="$TMP_DIR/manifest-v1.tsv"
 readonly FAILURES="$TMP_DIR/failures.txt"
 readonly FIRST_FAILURES="$TMP_DIR/failures.first.txt"
 trap 'rm -rf -- "$TMP_DIR"' EXIT
@@ -61,7 +76,33 @@ cd "$SRC"
 {
   printf 'index.html\0sw.js\0manifest.webmanifest\0icon-192.png\0icon-512.png\0'
   find snd -type f -print0
-} > "$FILE_LIST"
+} > "$ALL_FILES"
+
+: > "$CURRENT_MANIFEST"
+xargs -0 sha256sum --zero -- < "$ALL_FILES" |
+while IFS= read -r -d '' record; do
+  digest="${record%% *}"
+  relative="${record:66}"
+  if [[ "$relative" == *$'\t'* || "$relative" == *$'\r'* || "$relative" == *$'\n'* ]]; then
+    echo "ERROR: deployment paths may not contain tabs or newlines: $relative" >&2
+    exit 1
+  fi
+  printf '%s\t%s\n' "$digest" "$relative" >> "$CURRENT_MANIFEST"
+done
+
+: > "$FILE_LIST"
+if [[ -f "$STATE_MANIFEST" ]]; then
+  awk -F '\t' '
+    NR == FNR { deployed[$0] = 1; next }
+    !($0 in deployed) { print $2 }
+  ' "$STATE_MANIFEST" "$CURRENT_MANIFEST" > "$CHANGED_LINES"
+else
+  awk -F '\t' '{ print $2 }' "$CURRENT_MANIFEST" > "$CHANGED_LINES"
+fi
+changed_count="$(wc -l < "$CHANGED_LINES" | tr -d '[:space:]')"
+while IFS= read -r relative; do
+  printf '%s\0' "$relative" >> "$FILE_LIST"
+done < "$CHANGED_LINES"
 
 encode_url_path() {
   local value="$1"
@@ -96,9 +137,20 @@ export -f encode_url_path upload_one
 
 sound_count="$(find snd -type f | wc -l | tr -d '[:space:]')"
 total=$((sound_count + 5))
-echo "Uploading $total files to ${BASE}/ with $PARALLEL_UPLOADS connections..."
+if [[ -f "$STATE_MANIFEST" ]]; then
+  echo "Uploading $changed_count modified file(s) out of $total to ${BASE}/ with $PARALLEL_UPLOADS connections..."
+else
+  echo "No successful deployment state found; uploading all $total files to ${BASE}/..."
+fi
 
-xargs -0 -P "$PARALLEL_UPLOADS" -I '{}' bash -c 'upload_one "$1"' _ '{}' < "$FILE_LIST"
+if [[ "$MODE" == "--plan" ]]; then
+  echo "PLAN: $changed_count of $total files would be uploaded."
+  exit 0
+fi
+
+if (( changed_count > 0 )); then
+  xargs -0 -P "$PARALLEL_UPLOADS" -I '{}' "$BASH" -c 'upload_one "$1"' _ '{}' < "$FILE_LIST"
+fi
 
 if [[ -s "$FAILURES" ]]; then
   first_failure_count="$(wc -l < "$FAILURES" | tr -d '[:space:]')"
@@ -132,4 +184,8 @@ verify_url "$LIVE" "/mfx/"
 verify_url "${LIVE}sw.js" "/mfx/sw.js"
 verify_url "${LIVE}manifest.webmanifest" "/mfx/manifest.webmanifest"
 
-echo "DONE: uploaded $total/$total files to $LIVE"
+mkdir -p "$STATE_DIR"
+cp -- "$CURRENT_MANIFEST" "$STATE_MANIFEST.tmp"
+mv -f -- "$STATE_MANIFEST.tmp" "$STATE_MANIFEST"
+
+echo "DONE: uploaded $changed_count modified file(s) out of $total to $LIVE"

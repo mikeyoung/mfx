@@ -7,9 +7,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="icon" href="./icon-192.png" sizes="192x192" type="image/png">
-  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="manifest" href="./manifest.webmanifest?v=__APP_VERSION__">
+  <link rel="icon" href="./icon-192.png?v=__APP_VERSION__" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="./icon-192.png?v=__APP_VERSION__">
   <title>Mellotron Sound Effects</title>
   <style>
     :root {
@@ -114,6 +114,10 @@
     // Generated from the files in ./snd. Filenames stay in this small manifest;
     // compressed audio is cached on disk, never retained as a JavaScript heap cache.
     const APP_VERSION = "__APP_VERSION__";
+    const SHELL_CACHE_NAME = "__SHELL_CACHE_NAME__";
+    const SHELL_CACHE_PREFIX = "mfx-shell-";
+    const VERSION_STORAGE_KEY = "mfx-version";
+    const VERSION_RELOAD_KEY = "mfx-version-reload";
     const SOUND_FILES = __SOUND_FILES__;
     const SOUND_CACHE_NAME = "__CACHE_NAME__";
     const CHANNEL_COUNT = 4;
@@ -194,11 +198,56 @@
     logInfo(`Version ${APP_VERSION}`);
 
     async function registerServiceWorker() {
-      if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+      if (!("serviceWorker" in navigator) || location.protocol === "file:") return null;
       try {
-        await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+        return await navigator.serviceWorker.register("./sw.js", { scope: "./" });
       } catch (error) {
         logWarning(`Offline support unavailable: ${error.message}`);
+        return null;
+      }
+    }
+
+    async function initializeApplicationCache() {
+      let previousVersion = null;
+      try {
+        previousVersion = localStorage.getItem(VERSION_STORAGE_KEY);
+        localStorage.setItem(VERSION_STORAGE_KEY, APP_VERSION);
+      } catch {
+        // Storage can be disabled; service-worker versioning still remains active.
+      }
+
+      const registration = await registerServiceWorker();
+      if (!previousVersion || previousVersion === APP_VERSION) return;
+
+      logInfo(`Version changed from ${previousVersion} to ${APP_VERSION}; refreshing caches`);
+      if ("caches" in window) {
+        try {
+          const cacheNames = await caches.keys();
+          await Promise.all(cacheNames.map((name) => (
+            name.startsWith(SHELL_CACHE_PREFIX) && name !== SHELL_CACHE_NAME
+              ? caches.delete(name)
+              : Promise.resolve(false)
+          )));
+        } catch (error) {
+          logWarning(`Stale app cache cleanup failed: ${error.message}`);
+        }
+      }
+
+      if (registration) {
+        try {
+          await registration.update();
+        } catch (error) {
+          logWarning(`App update check failed: ${error.message}`);
+        }
+      }
+
+      try {
+        if (sessionStorage.getItem(VERSION_RELOAD_KEY) !== APP_VERSION) {
+          sessionStorage.setItem(VERSION_RELOAD_KEY, APP_VERSION);
+          location.reload();
+        }
+      } catch {
+        // A storage-restricted browser still receives network-first navigations.
       }
     }
 
@@ -1521,7 +1570,7 @@
       else void start();
     });
     ignoreMediaButtons();
-    void registerServiceWorker();
+    void initializeApplicationCache();
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "visible") return;
       resumePlaybackContext();

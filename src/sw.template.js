@@ -1,5 +1,6 @@
 "use strict";
 
+const APP_VERSION = "__APP_VERSION__";
 const SOUND_CACHE_NAME = "__CACHE_NAME__";
 const SHELL_CACHE_NAME = "__SHELL_CACHE_NAME__";
 const SOUND_CACHE_PREFIX = "mfx-sounds-v2-";
@@ -208,26 +209,51 @@ async function handleSoundRequest(request) {
   return response;
 }
 
-async function handleShellRequest(request) {
+async function handleShellRequest(request, cacheKey = request.url) {
   const cache = await caches.open(SHELL_CACHE_NAME);
-  const cached = await cache.match(request);
+
+  if (request.mode === "navigate") {
+    try {
+      const response = await limitedNetworkFetch(new Request(request, { cache: "no-cache" }));
+      if (response.ok) {
+        try {
+          await cache.put(new URL("./", self.registration.scope).href, response.clone());
+        } catch {
+          // The fresh navigation remains usable when storage is unavailable.
+        }
+      }
+      return response;
+    } catch {
+      // Fall through to the offline shell below.
+    }
+
+    const fallback = await cache.match(new URL("./", self.registration.scope).href);
+    if (fallback) return fallback;
+    return limitedNetworkFetch(request);
+  }
+
+  const requestUrl = new URL(request.url);
+  const requestedVersion = requestUrl.searchParams.get("v");
+  if (requestedVersion && requestedVersion !== APP_VERSION) {
+    // A newer page may briefly be controlled by the previous worker. Never let
+    // that worker answer versioned asset requests from its stale shell cache.
+    return limitedNetworkFetch(request);
+  }
+
+  const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
   try {
     const response = await limitedNetworkFetch(request);
     if (response.ok) {
       try {
-        await cache.put(request, response.clone());
+        await cache.put(cacheKey, response.clone());
       } catch {
         // The network response remains usable when storage is unavailable.
       }
     }
     return response;
   } catch (error) {
-    if (request.mode === "navigate") {
-      const fallback = await cache.match(new URL("./", self.registration.scope).href);
-      if (fallback) return fallback;
-    }
     throw error;
   }
 }
@@ -241,7 +267,9 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (request.mode === "navigate" || SHELL_ASSETS.includes(request.url)) {
-    event.respondWith(handleShellRequest(request));
+  const shellUrl = new URL(request.url);
+  shellUrl.searchParams.delete("v");
+  if (request.mode === "navigate" || SHELL_ASSETS.includes(shellUrl.href)) {
+    event.respondWith(handleShellRequest(request, shellUrl.href));
   }
 });

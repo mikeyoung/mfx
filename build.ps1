@@ -86,6 +86,7 @@ $output = $template.Replace('__SOUND_FILES__', $manifest).Replace(
   '__CACHE_NAME__',
   $cacheName
 ).Replace('__APP_VERSION__', $appVersion)
+$output = $output.Replace('__SHELL_CACHE_NAME__', $shellCacheName)
 [System.IO.File]::WriteAllText(
   $outputPath,
   $output,
@@ -98,7 +99,7 @@ $serviceWorkerTemplate = [System.IO.File]::ReadAllText(
 $serviceWorker = $serviceWorkerTemplate.Replace('__CACHE_NAME__', $cacheName).Replace(
   '__SHELL_CACHE_NAME__',
   $shellCacheName
-)
+).Replace('__APP_VERSION__', $appVersion)
 [System.IO.File]::WriteAllText(
   $serviceWorkerOutputPath,
   $serviceWorker,
