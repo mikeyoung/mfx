@@ -1,0 +1,1063 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>Mellotron Sound Effects</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #000;
+      color: #fff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      overflow-x: hidden;
+      background: #000;
+    }
+
+    main {
+      width: min(54rem, calc(100% - 2rem));
+      padding: clamp(2rem, 6vw, 5rem) 1rem;
+      text-align: center;
+    }
+
+    h1 {
+      margin: 0 0 1.5rem;
+      font-size: clamp(1.5rem, 4vw, 2.25rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      text-wrap: balance;
+    }
+
+    #go {
+      min-width: min(19rem, 80vw);
+      min-height: 7rem;
+      border: 2px solid #fff;
+      border-radius: 0.5rem;
+      padding: 1rem 2.5rem;
+      cursor: pointer;
+      color: #000;
+      background: #fff;
+      font: inherit;
+      font-size: clamp(3.25rem, 12vw, 6.75rem);
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      line-height: 1;
+      transition: background-color 100ms ease, color 100ms ease;
+    }
+
+    #go:hover:not(:disabled) {
+      color: #fff;
+      background: #000;
+    }
+
+    #go:active:not(:disabled) {
+      opacity: 0.72;
+    }
+
+    #go:focus-visible {
+      outline: 0.2rem solid #fff;
+      outline-offset: 0.4rem;
+    }
+
+    #go:disabled {
+      cursor: default;
+      color: #000;
+      background: #fff;
+      opacity: 0.5;
+    }
+
+    #go[data-state="running"] {
+      color: #fff;
+      background: #000;
+    }
+
+    #go[data-state="running"]:hover:not(:disabled) {
+      color: #000;
+      background: #fff;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #go {
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Mellotron<br>Sound Effects</h1>
+    <button id="go" type="button">GO!</button>
+  </main>
+
+  <script>
+    "use strict";
+
+    // Generated from the files in ./snd. Filenames stay in this small manifest;
+    // compressed audio is cached on disk, never retained as a JavaScript heap cache.
+    const SOUND_FILES = __SOUND_FILES__;
+    const SOUND_CACHE_NAME = "__CACHE_NAME__";
+    const CHANNEL_COUNT = 4;
+    const OUTPUT_VOLUME = 0.25;
+    const RETRY_DELAY_MS = 250;
+    const DELAY_FEEDBACK = 0.48;
+    const DELAY_TAIL_THRESHOLD = 0.001;
+    const PAN_MOTION_CHANCE = 0.5;
+    const MAX_PAN_SWEEPS = 4;
+    const PITCH_MODULATION_CHANCE = 0.5;
+    const MIN_PLAYBACK_RATE = 0.5;
+    const MAX_PLAYBACK_RATE = 2;
+    const PLAYBACK_RATE_SAFETY_MARGIN = 0.001;
+    const AUDIO_START_TIMEOUT_MS = 5000;
+
+    const goButton = document.querySelector("#go");
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const channels = Array.from({ length: CHANNEL_COUNT }, () => {
+      return {
+        audio: null,
+        mediaSource: null,
+        source: null,
+        panner: null,
+        delayNode: null,
+        delayWet: null,
+        delayFeedback: null,
+        pitchOscillator: null,
+        pitchGain: null,
+        controller: null,
+        cancel: null,
+        task: null
+      };
+    });
+
+    let running = false;
+    let audioContext = null;
+    let outputGain = null;
+    let outputLimiter = null;
+    let startController = null;
+    let errorCount = 0;
+    let shutdownPromise = null;
+
+    function logInfo(message) {
+      console.info(`[Mellotron Sound Effects] ${message}`);
+    }
+
+    function logWarning(message) {
+      console.warn(`[Mellotron Sound Effects] ${message}`);
+    }
+
+    function logError(message, error = null) {
+      if (error) console.error(`[Mellotron Sound Effects] ${message}`, error);
+      else console.error(`[Mellotron Sound Effects] ${message}`);
+    }
+
+    function handleCacheMessage(event) {
+      const message = event.data;
+      if (!message || message.cacheName !== SOUND_CACHE_NAME || !running) return;
+
+      if (message.type === "CACHE_PROGRESS") {
+        logInfo(`Caching ${message.completed.toLocaleString()} / ${message.total.toLocaleString()}`);
+      } else if (message.type === "CACHE_RETRY_START") {
+        logWarning(`Cache retry ${message.attempt} / ${message.maxAttempts} · ${message.total.toLocaleString()} files`);
+      } else if (message.type === "CACHE_RETRY_PROGRESS") {
+        logWarning(`Cache retry ${message.attempt} / ${message.maxAttempts} · ${message.completed.toLocaleString()} / ${message.total.toLocaleString()}`);
+      } else if (message.type === "CACHE_COMPLETE") {
+        const suffix = message.errors
+          ? ` (${message.errors.toLocaleString()} could not be cached)`
+          : "";
+        logInfo(`Cache complete${suffix}`);
+      }
+    }
+
+    async function beginBackgroundCaching() {
+      if (!("serviceWorker" in navigator) || !("caches" in window)) {
+        logWarning("Cache unavailable");
+        return;
+      }
+
+      try {
+        if (navigator.storage && navigator.storage.persist) {
+          void navigator.storage.persist().catch(() => {});
+        }
+
+        const registration = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+        await navigator.serviceWorker.ready;
+        const worker = navigator.serviceWorker.controller
+          || registration.active
+          || registration.waiting;
+
+        if (!worker) {
+          throw new Error("The cache worker did not become active.");
+        }
+
+        // The structured-clone copy is only a short list of filenames. The worker
+        // downloads one file at a time and Cache Storage writes response bodies to disk.
+        worker.postMessage({
+          type: "CACHE_SOUNDS",
+          cacheName: SOUND_CACHE_NAME,
+          urls: SOUND_FILES.map(getSoundUrl)
+        });
+      } catch {
+        logWarning("Cache unavailable");
+      }
+    }
+
+    function chooseSound() {
+      return SOUND_FILES[Math.floor(Math.random() * SOUND_FILES.length)];
+    }
+
+    function getSoundUrl(relativePath) {
+      const encodedPath = relativePath.split("/").map(encodeURIComponent).join("/");
+      return new URL(`snd/${encodedPath}`, document.baseURI).href;
+    }
+
+    function choosePan() {
+      return (Math.random() * 2) - 1;
+    }
+
+    function choosePlaybackRate() {
+      if (Math.random() >= 0.5) return 1;
+      return Math.random() < 0.5
+        ? 0.5 + (Math.random() * 0.5)
+        : 1 + Math.random();
+    }
+
+    function choosePitchModulation(playbackRate) {
+      if (Math.random() >= PITCH_MODULATION_CHANCE) {
+        return { playbackRate, pitch: null };
+      }
+
+      const depth = 0.04 + (Math.random() * 0.12);
+      const safePlaybackRate = Math.min(
+        MAX_PLAYBACK_RATE - depth - PLAYBACK_RATE_SAFETY_MARGIN,
+        Math.max(
+          MIN_PLAYBACK_RATE + depth + PLAYBACK_RATE_SAFETY_MARGIN,
+          playbackRate
+        )
+      );
+
+      return {
+        playbackRate: safePlaybackRate,
+        pitch: {
+          depth,
+          frequency: 0.18 + (Math.random() * 0.47)
+        }
+      };
+    }
+
+    function chooseDelay() {
+      return Math.random() < 0.5
+        ? 0.08 + (Math.random() * 0.52)
+        : 0;
+    }
+
+    function scheduleRandomPanMotion(panner, initialPan, durationSeconds, enabled) {
+      if (!Number.isFinite(durationSeconds)
+          || durationSeconds < 0.12
+          || !enabled) {
+        return null;
+      }
+
+      const parameter = panner.pan;
+      const startTime = audioContext.currentTime;
+      const endTime = startTime + durationSeconds;
+      const possibleSweeps = Math.min(
+        MAX_PAN_SWEEPS,
+        Math.max(1, Math.floor(durationSeconds / 0.12))
+      );
+      const sweepCount = 1 + Math.floor(Math.random() * possibleSweeps);
+      let cursor = startTime;
+      let currentPan = initialPan;
+
+      parameter.setValueAtTime(initialPan, startTime);
+
+      for (let index = 0; index < sweepCount; index += 1) {
+        const remaining = endTime - cursor;
+        if (remaining <= 0.06) break;
+
+        const maximumHold = Math.min(1.25, (remaining - 0.06) * 0.75);
+        cursor += Math.random() * Math.max(0, maximumHold);
+
+        const availableSweepTime = endTime - cursor;
+        const minimumSweep = Math.min(0.06, availableSweepTime);
+        const maximumSweep = Math.min(1.5, availableSweepTime);
+        const sweepDuration = minimumSweep
+          + (Math.random() * (maximumSweep - minimumSweep));
+        const nextPan = choosePan();
+
+        parameter.setValueAtTime(currentPan, cursor);
+        cursor += sweepDuration;
+        parameter.linearRampToValueAtTime(nextPan, cursor);
+        currentPan = nextPan;
+      }
+    }
+
+    function schedulePitchWindows(parameter, durationSeconds, depth) {
+      if (!Number.isFinite(durationSeconds) || durationSeconds < 0.25) return null;
+
+      const startTime = audioContext.currentTime;
+      const endTime = startTime + durationSeconds;
+      const possibleWindows = Math.min(
+        3,
+        Math.max(1, Math.floor(durationSeconds / 0.8))
+      );
+      const requestedWindows = 1 + Math.floor(Math.random() * possibleWindows);
+      let cursor = startTime;
+      let count = 0;
+      let shortestWindow = Infinity;
+      let longestWindow = 0;
+
+      parameter.setValueAtTime(0, startTime);
+
+      for (let index = 0; index < requestedWindows; index += 1) {
+        const remaining = endTime - cursor;
+        if (remaining < 0.25) break;
+
+        const hold = Math.random() * Math.min(1.25, remaining * 0.35);
+        cursor += hold;
+        const available = endTime - cursor;
+        if (available < 0.2) break;
+
+        const windowDuration = Math.min(
+          available,
+          0.4 + (Math.random() * 1.8)
+        );
+        const attack = windowDuration * (0.2 + (Math.random() * 0.2));
+        const release = windowDuration * (0.2 + (Math.random() * 0.2));
+        const sustainEnd = cursor + windowDuration - release;
+
+        parameter.setValueAtTime(0, cursor);
+        parameter.linearRampToValueAtTime(depth, cursor + attack);
+        parameter.setValueAtTime(depth, sustainEnd);
+        parameter.linearRampToValueAtTime(0, cursor + windowDuration);
+
+        cursor += windowDuration;
+        count += 1;
+        shortestWindow = Math.min(shortestWindow, windowDuration);
+        longestWindow = Math.max(longestWindow, windowDuration);
+      }
+
+      return count ? { count, shortestWindow, longestWindow, endTime: cursor } : null;
+    }
+
+    function getDelayRepeats() {
+      return Math.ceil(
+        Math.log(DELAY_TAIL_THRESHOLD) / Math.log(DELAY_FEEDBACK)
+      );
+    }
+
+    function getDelayTailMilliseconds(delaySeconds) {
+      if (!delaySeconds) return 0;
+      return Math.ceil(delaySeconds * getDelayRepeats() * 1000);
+    }
+
+    function abortError() {
+      return new DOMException("Playback stopped", "AbortError");
+    }
+
+    function waitForAudioStart(context, signal) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timeout = window.setTimeout(() => {
+          finish(new Error("Audio startup timed out."));
+        }, AUDIO_START_TIMEOUT_MS);
+
+        const onAbort = () => finish(abortError());
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          signal.removeEventListener("abort", onAbort);
+          if (error) reject(error);
+          else resolve();
+        };
+
+        signal.addEventListener("abort", onAbort, { once: true });
+        Promise.resolve()
+          .then(() => context.resume())
+          .then(() => finish(), finish);
+      });
+    }
+
+    function disconnectNode(node) {
+      if (!node) return;
+      try {
+        node.disconnect();
+      } catch {
+        // A partially constructed graph may already be disconnected.
+      }
+    }
+
+    function releasePanner(channel, panner) {
+      if (!panner) return;
+      try {
+        panner.pan.cancelScheduledValues(0);
+      } catch {
+        // The context may already be closing.
+      }
+      disconnectNode(panner);
+      if (channel.panner === panner) channel.panner = null;
+    }
+
+    function createPitchRoute(channel, source, pitch, durationSeconds) {
+      if (!pitch) return { route: null, motion: null };
+
+      const gain = audioContext.createGain();
+      let oscillator = null;
+
+      try {
+        gain.gain.value = 0;
+        const motion = schedulePitchWindows(gain.gain, durationSeconds, pitch.depth);
+        if (!motion) {
+          try {
+            gain.gain.cancelScheduledValues(0);
+          } catch {
+            // The context may already be closing.
+          }
+          disconnectNode(gain);
+          return { route: null, motion: null };
+        }
+
+        oscillator = audioContext.createOscillator();
+        channel.pitchOscillator = oscillator;
+        channel.pitchGain = gain;
+        oscillator.type = "sine";
+        oscillator.frequency.value = pitch.frequency;
+        oscillator.connect(gain);
+        gain.connect(source.playbackRate);
+        oscillator.start();
+        oscillator.stop(motion.endTime);
+
+        return {
+          route: { oscillator, gain, released: false },
+          motion
+        };
+      } catch (error) {
+        try {
+          gain.gain.cancelScheduledValues(0);
+        } catch {
+          // The context may already be closing.
+        }
+        if (oscillator) {
+          try {
+            oscillator.stop();
+          } catch {
+            // It may not have started before construction failed.
+          }
+          disconnectNode(oscillator);
+        }
+        disconnectNode(gain);
+        if (channel.pitchOscillator === oscillator) channel.pitchOscillator = null;
+        if (channel.pitchGain === gain) channel.pitchGain = null;
+        throw error;
+      }
+    }
+
+    function releasePitchRoute(channel, route) {
+      if (!route || route.released) return;
+      route.released = true;
+      try {
+        route.gain.gain.cancelScheduledValues(0);
+      } catch {
+        // The context may already be closing.
+      }
+      try {
+        route.oscillator.stop();
+      } catch {
+        // The oscillator may already have been stopped during teardown.
+      }
+      disconnectNode(route.oscillator);
+      disconnectNode(route.gain);
+      if (channel.pitchOscillator === route.oscillator) channel.pitchOscillator = null;
+      if (channel.pitchGain === route.gain) channel.pitchGain = null;
+    }
+
+    function createDelayRoute(channel, panner, delaySeconds) {
+      if (!delaySeconds) {
+        panner.connect(outputGain);
+        return null;
+      }
+
+      // A bounded feedback trail reuses one sub-second DelayNode buffer. It does
+      // not allocate a new audio buffer for each repeat.
+      let delayNode = null;
+      let delayWet = null;
+      let delayFeedback = null;
+
+      try {
+        delayNode = audioContext.createDelay(delaySeconds + 0.01);
+        channel.delayNode = delayNode;
+        delayWet = audioContext.createGain();
+        channel.delayWet = delayWet;
+        delayFeedback = audioContext.createGain();
+        channel.delayFeedback = delayFeedback;
+        delayNode.delayTime.value = delaySeconds;
+        delayWet.gain.value = 0.55;
+        delayFeedback.gain.value = DELAY_FEEDBACK;
+        panner.connect(outputGain);
+        panner.connect(delayNode);
+        delayNode.connect(delayWet);
+        delayWet.connect(outputGain);
+        delayNode.connect(delayFeedback);
+        delayFeedback.connect(delayNode);
+        return { delayNode, delayWet, delayFeedback };
+      } catch (error) {
+        disconnectNode(delayNode);
+        disconnectNode(delayWet);
+        disconnectNode(delayFeedback);
+        if (channel.delayNode === delayNode) channel.delayNode = null;
+        if (channel.delayWet === delayWet) channel.delayWet = null;
+        if (channel.delayFeedback === delayFeedback) channel.delayFeedback = null;
+        throw error;
+      }
+    }
+
+    function releaseDelayRoute(channel, route) {
+      if (!route) return;
+      disconnectNode(route.delayNode);
+      disconnectNode(route.delayWet);
+      disconnectNode(route.delayFeedback);
+      if (channel.delayNode === route.delayNode) channel.delayNode = null;
+      if (channel.delayWet === route.delayWet) channel.delayWet = null;
+      if (channel.delayFeedback === route.delayFeedback) channel.delayFeedback = null;
+    }
+
+    function releaseNativeSource(channel, audio, mediaSource, panner) {
+      if (channel.audio === audio) channel.audio = null;
+      if (mediaSource) {
+        disconnectNode(mediaSource);
+        if (channel.mediaSource === mediaSource) channel.mediaSource = null;
+      }
+      releasePanner(channel, panner);
+      if (audio) {
+        try {
+          audio.pause();
+          audio.removeAttribute("src");
+          audio.load();
+        } catch {
+          // Dropping all application references still permits browser cleanup.
+        }
+      }
+    }
+
+    function releaseNativeAudio(
+      channel,
+      audio,
+      mediaSource = channel.mediaSource,
+      panner = channel.panner,
+      delayRoute = channel.delayNode && channel.delayWet && channel.delayFeedback
+        ? {
+            delayNode: channel.delayNode,
+            delayWet: channel.delayWet,
+            delayFeedback: channel.delayFeedback
+          }
+        : null
+    ) {
+      releaseNativeSource(channel, audio, mediaSource, panner);
+      releaseDelayRoute(channel, delayRoute);
+    }
+
+    function playNative(channel, url, playbackRate, delaySeconds, pan, panMoves) {
+      // Forward playback stays on the browser's native media pipeline, which can
+      // use the operating system's accelerated decoder without allocating PCM in JS.
+      return new Promise((resolve, reject) => {
+        let audio = null;
+        let mediaSource = null;
+        let panner = null;
+        let delayRoute = null;
+        let tailTimer = null;
+        let sourceReleased = false;
+        let settled = false;
+        let cancel = null;
+
+        const releaseSourceOnly = () => {
+          if (sourceReleased) return;
+          sourceReleased = true;
+          if (audio) {
+            audio.removeEventListener("ended", onEnded);
+            audio.removeEventListener("error", onError);
+            audio.removeEventListener("loadedmetadata", onMetadata);
+          }
+          releaseNativeSource(channel, audio, mediaSource, panner);
+        };
+
+        const cleanup = () => {
+          if (cancel && channel.cancel === cancel) {
+            channel.cancel = null;
+          }
+          if (tailTimer !== null) window.clearTimeout(tailTimer);
+          tailTimer = null;
+          releaseSourceOnly();
+          releaseDelayRoute(channel, delayRoute);
+        };
+
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (error) reject(error);
+          else resolve();
+        };
+
+        const onEnded = () => {
+          if (!delaySeconds) {
+            finish();
+            return;
+          }
+          // Once the dry source ends, drop the media element and decoder state;
+          // only the small bounded DelayNode buffer remains for the final tap.
+          releaseSourceOnly();
+          tailTimer = window.setTimeout(() => {
+            tailTimer = null;
+            finish();
+          }, getDelayTailMilliseconds(delaySeconds));
+        };
+        const onMetadata = () => {
+          const remainingDuration = (audio.duration - audio.currentTime) / playbackRate;
+          scheduleRandomPanMotion(
+            panner,
+            pan,
+            remainingDuration,
+            panMoves
+          );
+        };
+        const onError = () => finish(new Error("The browser could not play this sound."));
+        cancel = () => finish(abortError());
+        channel.cancel = cancel;
+
+        try {
+          audio = new Audio();
+          channel.audio = audio;
+          mediaSource = audioContext.createMediaElementSource(audio);
+          channel.mediaSource = mediaSource;
+          panner = audioContext.createStereoPanner();
+          channel.panner = panner;
+          delayRoute = createDelayRoute(channel, panner, delaySeconds);
+          panner.pan.value = pan;
+          mediaSource.connect(panner);
+          audio.preload = "none";
+          audio.volume = 1;
+          audio.playbackRate = playbackRate;
+          audio.preservesPitch = false;
+          audio.addEventListener("ended", onEnded, { once: true });
+          audio.addEventListener("error", onError, { once: true });
+          audio.addEventListener("loadedmetadata", onMetadata, { once: true });
+          audio.src = url;
+          Promise.resolve(audio.play()).catch(onError);
+        } catch (error) {
+          finish(error);
+        }
+      });
+    }
+
+    async function playBuffered(
+      channel,
+      url,
+      reversed,
+      playbackRate,
+      pitch,
+      delaySeconds,
+      pan,
+      panMoves
+    ) {
+      // Reverse and oscillator-pitch playback require a decoded source. Only this
+      // clip is decoded, optionally reversed in place, then completely released.
+      const controller = new AbortController();
+      let response = null;
+      let encodedAudio = null;
+      let decodedAudio = null;
+      let source = null;
+      let panner = null;
+      let pitchRoute = null;
+      let delayRoute = null;
+      let stopPlayback = null;
+      let tailTimer = null;
+      let sourceReleased = false;
+
+      channel.controller = controller;
+      channel.cancel = () => {
+        controller.abort();
+        if (stopPlayback) stopPlayback();
+      };
+
+      try {
+        if ("caches" in window) {
+          const cache = await caches.open(SOUND_CACHE_NAME);
+          response = await cache.match(url);
+        }
+
+        if (controller.signal.aborted) throw abortError();
+
+        if (!response) {
+          response = await fetch(url, { signal: controller.signal });
+        }
+
+        if (!response.ok) {
+          throw new Error(`Sound request failed with status ${response.status}.`);
+        }
+
+        encodedAudio = await response.arrayBuffer();
+        response = null;
+        if (controller.signal.aborted) throw abortError();
+        decodedAudio = await audioContext.decodeAudioData(encodedAudio);
+        encodedAudio = null;
+
+        if (controller.signal.aborted) throw abortError();
+
+        if (reversed) {
+          for (let index = 0; index < decodedAudio.numberOfChannels; index += 1) {
+            decodedAudio.getChannelData(index).reverse();
+          }
+        }
+
+        source = audioContext.createBufferSource();
+        panner = audioContext.createStereoPanner();
+        source.buffer = decodedAudio;
+        source.playbackRate.value = playbackRate;
+        const estimatedDuration = decodedAudio.duration / playbackRate;
+        pitchRoute = createPitchRoute(
+          channel,
+          source,
+          pitch,
+          estimatedDuration
+        ).route;
+        panner.pan.value = pan;
+        scheduleRandomPanMotion(
+          panner,
+          pan,
+          estimatedDuration,
+          panMoves
+        );
+        source.connect(panner);
+        delayRoute = createDelayRoute(channel, panner, delaySeconds);
+        channel.source = source;
+        channel.panner = panner;
+
+        await new Promise((resolve, reject) => {
+          let settled = false;
+
+          const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            source.removeEventListener("ended", onEnded);
+            if (tailTimer !== null) window.clearTimeout(tailTimer);
+            tailTimer = null;
+            stopPlayback = null;
+            if (error) reject(error);
+            else resolve();
+          };
+
+          const onEnded = () => {
+            // The source buffer is the largest per-clip allocation. It is no longer
+            // needed once the source ends, even while a short delay tap drains.
+            sourceReleased = true;
+            releasePitchRoute(channel, pitchRoute);
+            disconnectNode(source);
+            source.buffer = null;
+            if (channel.source === source) channel.source = null;
+            releasePanner(channel, panner);
+            decodedAudio = null;
+            if (!delaySeconds) {
+              finish();
+              return;
+            }
+            tailTimer = window.setTimeout(() => {
+              tailTimer = null;
+              finish();
+            }, getDelayTailMilliseconds(delaySeconds));
+          };
+          stopPlayback = () => {
+            try {
+              source.stop();
+            } catch {
+              // It may already have ended; cleanup below is still safe.
+            }
+            finish(abortError());
+          };
+
+          source.addEventListener("ended", onEnded, { once: true });
+          source.start(0);
+        });
+      } finally {
+        controller.abort();
+
+        if (source && !sourceReleased) {
+          try {
+            source.stop();
+          } catch {
+            // A one-shot source cannot be stopped twice.
+          }
+          disconnectNode(source);
+          source.buffer = null;
+        }
+        if (tailTimer !== null) window.clearTimeout(tailTimer);
+        tailTimer = null;
+        releasePitchRoute(channel, pitchRoute);
+        releaseDelayRoute(channel, delayRoute);
+        releasePanner(channel, panner);
+
+        if (channel.source === source) channel.source = null;
+        if (channel.controller === controller) channel.controller = null;
+        channel.cancel = null;
+        stopPlayback = null;
+        pitchRoute = null;
+        delayRoute = null;
+        panner = null;
+        source = null;
+        decodedAudio = null;
+        encodedAudio = null;
+        response = null;
+      }
+    }
+
+    function briefRetryPause(channel) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = window.setTimeout(() => finish(), RETRY_DELAY_MS);
+
+        const cancel = () => finish(abortError());
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          if (timer !== null) window.clearTimeout(timer);
+          timer = null;
+          if (channel.cancel === cancel) channel.cancel = null;
+          if (error) reject(error);
+          else resolve();
+        };
+
+        channel.cancel = cancel;
+      });
+    }
+
+    async function runChannel(channel) {
+      while (running) {
+        const file = chooseSound();
+        // Every choice is independent. A clip can be reversed, speed-shifted,
+        // pitch-modulated, delayed, positioned, and moving all at once.
+        const reversed = Math.random() < 0.5;
+        const pitchChoice = choosePitchModulation(choosePlaybackRate());
+        const playbackRate = pitchChoice.playbackRate;
+        const pitch = pitchChoice.pitch;
+        const delaySeconds = chooseDelay();
+        const pan = choosePan();
+        const panMoves = Math.random() < PAN_MOTION_CHANCE;
+
+        try {
+          if (reversed || pitch) {
+            await playBuffered(
+              channel,
+              getSoundUrl(file),
+              reversed,
+              playbackRate,
+              pitch,
+              delaySeconds,
+              pan,
+              panMoves
+            );
+          } else {
+            await playNative(
+              channel,
+              getSoundUrl(file),
+              playbackRate,
+              delaySeconds,
+              pan,
+              panMoves
+            );
+          }
+        } catch (error) {
+          if (!running || error.name === "AbortError") break;
+          errorCount += 1;
+          logWarning(`${errorCount} unreadable sound${errorCount === 1 ? "" : "s"} skipped`);
+          try {
+            await briefRetryPause(channel);
+          } catch (retryError) {
+            if (retryError.name === "AbortError") break;
+            throw retryError;
+          }
+        }
+      }
+
+    }
+
+    function releaseChannel(channel) {
+      if (channel.cancel) {
+        channel.cancel();
+        return;
+      }
+
+      if (channel.controller) channel.controller.abort();
+      if (channel.audio) releaseNativeAudio(channel, channel.audio);
+      if (channel.source) {
+        try {
+          channel.source.stop();
+        } catch {
+          // The source may already have ended.
+        }
+        disconnectNode(channel.source);
+        channel.source.buffer = null;
+        channel.source = null;
+      }
+      if (channel.mediaSource) {
+        disconnectNode(channel.mediaSource);
+        channel.mediaSource = null;
+      }
+      if (channel.pitchOscillator && channel.pitchGain) {
+        releasePitchRoute(channel, {
+          oscillator: channel.pitchOscillator,
+          gain: channel.pitchGain,
+          released: false
+        });
+      }
+      if (channel.delayNode && channel.delayWet && channel.delayFeedback) {
+        releaseDelayRoute(channel, {
+          delayNode: channel.delayNode,
+          delayWet: channel.delayWet,
+          delayFeedback: channel.delayFeedback
+        });
+      }
+      releasePanner(channel, channel.panner);
+    }
+
+    function resetInterface() {
+      goButton.disabled = false;
+      goButton.textContent = "GO!";
+      goButton.dataset.state = "idle";
+    }
+
+    async function shutdown() {
+      if (shutdownPromise) return shutdownPromise;
+
+      shutdownPromise = (async () => {
+        running = false;
+        if (startController) startController.abort();
+        channels.forEach(releaseChannel);
+
+        // Do not permit a fresh session to reuse channel state until every old
+        // async load/decode has reached its finally block and dropped references.
+        await Promise.allSettled(
+          channels.map((channel) => channel.task).filter(Boolean)
+        );
+        channels.forEach((channel) => {
+          channel.task = null;
+        });
+
+        const context = audioContext;
+        audioContext = null;
+        disconnectNode(outputGain);
+        outputGain = null;
+        disconnectNode(outputLimiter);
+        outputLimiter = null;
+
+        if (context && context.state !== "closed") {
+          try {
+            await context.close();
+          } catch {
+            // The document is leaving; there is nothing else to recover here.
+          }
+        }
+      })();
+
+      try {
+        await shutdownPromise;
+      } finally {
+        shutdownPromise = null;
+      }
+    }
+
+    async function start() {
+      if (running) return;
+      if (shutdownPromise) await shutdownPromise;
+
+      if (location.protocol === "file:") {
+        logError("Open this folder through a local web server so reversed sounds can be loaded.");
+        return;
+      }
+
+      if (!SOUND_FILES.length) {
+        logError("No sounds were found in the snd folder.");
+        return;
+      }
+
+      if (!AudioContextClass) {
+        logError("This browser does not support reversed Web Audio playback.");
+        return;
+      }
+
+      const controller = new AbortController();
+      startController = controller;
+      goButton.disabled = false;
+      goButton.textContent = "STOP";
+      goButton.dataset.state = "running";
+      logInfo("Starting playback");
+      errorCount = 0;
+      running = true;
+
+      try {
+        const context = new AudioContextClass({ latencyHint: "playback" });
+        audioContext = context;
+        if (typeof context.createStereoPanner !== "function") {
+          throw new Error("Stereo panning is not supported.");
+        }
+
+        outputGain = context.createGain();
+        outputGain.gain.value = OUTPUT_VOLUME;
+        outputLimiter = context.createDynamicsCompressor();
+        outputLimiter.threshold.value = -3;
+        outputLimiter.knee.value = 0;
+        outputLimiter.ratio.value = 20;
+        outputLimiter.attack.value = 0.003;
+        outputLimiter.release.value = 0.25;
+        outputGain.connect(outputLimiter);
+        outputLimiter.connect(context.destination);
+        await waitForAudioStart(context, controller.signal);
+        if (controller.signal.aborted || !running || audioContext !== context) {
+          throw abortError();
+        }
+
+        void beginBackgroundCaching();
+
+        channels.forEach((channel) => {
+          channel.task = runChannel(channel);
+        });
+      } catch (error) {
+        if (error.name === "AbortError") return;
+        await shutdown();
+        resetInterface();
+        logError("This browser could not start stereo audio playback.", error);
+      } finally {
+        if (startController === controller) startController = null;
+      }
+    }
+
+    async function stop() {
+      if (!running) return;
+      goButton.disabled = true;
+      await shutdown();
+      resetInterface();
+      logInfo("Playback stopped");
+    }
+
+    goButton.addEventListener("click", () => {
+      if (running) void stop();
+      else void start();
+    });
+    navigator.serviceWorker?.addEventListener("message", handleCacheMessage);
+    window.addEventListener("pagehide", shutdown);
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) resetInterface();
+    });
+  </script>
+</body>
+</html>
