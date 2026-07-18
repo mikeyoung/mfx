@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.3**, with `9` as the major version and `3` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.4**, with `9` as the major version and `4` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.3 must be 9.4.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.4 must be 9.5.
 
 ## Playback
 
@@ -30,7 +30,8 @@ Each track keeps exactly two future sounds loading while the current sound plays
 
 - Playback is capped at four tracks.
 - Each track lazily loads two sounds ahead; the full library is never preloaded.
-- Failed loads are skipped immediately and replaced until a usable sound is found.
+- A track uses whichever look-ahead request becomes ready first, so one slow file cannot block a ready file behind it.
+- Failed or stalled loads have a bounded deadline, are skipped, and are immediately replaced until a usable sound is found.
 - Network work is capped at 13 concurrent requests in both the page and service worker.
 - Forward sounds without oscillator pitch use the browser's native media pipeline.
 - Reverse and pitch-modulated sounds use short-lived decoded Web Audio buffers.

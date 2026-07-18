@@ -123,6 +123,7 @@
     const CHANNEL_COUNT = 4;
     const LOOKAHEAD_DEPTH = 2;
     const MAX_CONCURRENT_REQUESTS = 13;
+    const SOUND_LOAD_TIMEOUT_MS = 6000;
     const MAX_CONCURRENT_DECODES = 1;
     const DECODE_TIMEOUT_MS = 15000;
     const AUDIO_CONTEXT_CLOSE_TIMEOUT_MS = 3000;
@@ -355,6 +356,71 @@
       });
     }
 
+    function soundLoadTimeoutError() {
+      const error = new Error("Sound loading timed out.");
+      error.name = "SoundLoadTimeoutError";
+      return error;
+    }
+
+    function waitForAbortable(promise, signal) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let activeSignal = signal;
+
+        const finish = (method, value) => {
+          if (settled) return;
+          settled = true;
+          if (activeSignal) {
+            activeSignal.removeEventListener("abort", onAbort);
+            activeSignal = null;
+          }
+          method(value);
+        };
+        const onAbort = () => finish(reject, abortError());
+
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+
+        signal.addEventListener("abort", onAbort, { once: true });
+        Promise.resolve(promise).then(
+          (value) => finish(resolve, value),
+          (error) => finish(reject, error)
+        );
+      });
+    }
+
+    async function runSoundLoadWithDeadline(operation, signal) {
+      if (signal.aborted) throw abortError();
+
+      const controller = new AbortController();
+      let timedOut = false;
+      const onAbort = () => controller.abort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+
+      const timer = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, SOUND_LOAD_TIMEOUT_MS);
+
+      try {
+        return await waitForAbortable(
+          Promise.resolve().then(() => operation(controller.signal)),
+          controller.signal
+        );
+      } catch (error) {
+        if (signal.aborted) throw abortError();
+        if (timedOut) throw soundLoadTimeoutError();
+        throw error;
+      } finally {
+        window.clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        controller.abort();
+      }
+    }
+
     function decodeTimeoutError() {
       const error = new Error("Audio decoding timed out.");
       error.name = "DecodeTimeoutError";
@@ -509,50 +575,56 @@
       }
     }
 
-    async function cacheSound(file, signal) {
-      const url = getSoundUrl(file);
-      const cache = await openSoundCache();
-      if (signal.aborted) throw abortError();
+    function cacheSound(file, signal) {
+      return runSoundLoadWithDeadline(async (loadSignal) => {
+        const url = getSoundUrl(file);
+        const cache = await waitForAbortable(openSoundCache(), loadSignal);
+        if (loadSignal.aborted) throw abortError();
 
-      if (cache) {
-        try {
-          if (await cache.match(url)) return { file, url };
-        } catch (error) {
-          warnCacheUnavailable(error);
+        if (cache) {
+          try {
+            if (await waitForAbortable(cache.match(url), loadSignal)) {
+              return { file, url };
+            }
+          } catch (error) {
+            if (loadSignal.aborted) throw error;
+            warnCacheUnavailable(error);
+          }
         }
-      }
 
-      const response = await runLimitedRequest(
-        () => fetch(url, {
-          signal,
-          cache: "reload",
-          headers: { "X-MFX-Prefetch": "1" }
-        }),
-        signal
-      );
-      if (!response.ok) {
-        throw new Error(`Sound request failed with status ${response.status}.`);
-      }
-      if (signal.aborted) throw abortError();
-
-      if (cache) {
-        try {
-          await cache.put(url, response);
-          return { file, url };
-        } catch (error) {
-          warnCacheUnavailable(error);
+        const response = await runLimitedRequest(
+          () => fetch(url, {
+            signal: loadSignal,
+            cache: "reload",
+            headers: { "X-MFX-Prefetch": "1" }
+          }),
+          loadSignal
+        );
+        if (!response.ok) {
+          throw new Error(`Sound request failed with status ${response.status}.`);
         }
-      }
+        if (loadSignal.aborted) throw abortError();
 
-      // Cache Storage may be blocked or full. Consume the response so the lazy
-      // load is still verified, then let playback make its normal URL request.
-      try {
-        await drainResponse(response);
-      } catch {
-        // cache.put() may already have consumed the response before failing.
-      }
-      if (signal.aborted) throw abortError();
-      return { file, url };
+        if (cache) {
+          try {
+            await waitForAbortable(cache.put(url, response), loadSignal);
+            return { file, url };
+          } catch (error) {
+            if (loadSignal.aborted) throw error;
+            warnCacheUnavailable(error);
+          }
+        }
+
+        // Cache Storage may be blocked or full. Consume the response so the lazy
+        // load is still verified, then let playback make its normal URL request.
+        try {
+          await drainResponse(response);
+        } catch {
+          // cache.put() may already have consumed the response before failing.
+        }
+        if (loadSignal.aborted) throw abortError();
+        return { file, url };
+      }, signal);
     }
 
     function loadSoundAhead(file, signal) {
@@ -568,7 +640,9 @@
     function fillLookahead(channel, signal) {
       while (running && !signal.aborted && channel.lookahead.length < LOOKAHEAD_DEPTH) {
         const file = chooseSound();
-        channel.lookahead.push({ ready: loadSoundAhead(file, signal) });
+        const entry = { ready: null };
+        entry.ready = loadSoundAhead(file, signal).then((result) => ({ entry, result }));
+        channel.lookahead.push(entry);
       }
     }
 
@@ -590,14 +664,23 @@
     async function takeNextLoadedSound(channel, signal) {
       while (running && !signal.aborted) {
         fillLookahead(channel, signal);
-        const entry = channel.lookahead.shift();
-        if (!entry) throw abortError();
+        if (!channel.lookahead.length) throw abortError();
+
+        // Use whichever candidate settles first. A stalled oldest request must
+        // never hide a ready second candidate and silence the track.
+        const settled = await Promise.race(
+          channel.lookahead.map((entry) => entry.ready)
+        );
+        if (!running || signal.aborted) throw abortError();
+        const entryIndex = channel.lookahead.indexOf(settled.entry);
+        if (entryIndex === -1) continue;
+        channel.lookahead.splice(entryIndex, 1);
+        settled.entry.ready = null;
 
         // Once this becomes the current candidate, immediately restore two
         // future entries. Four tracks therefore use at most twelve sound loads.
         fillLookahead(channel, signal);
-        const result = await entry.ready;
-        if (!running || signal.aborted) throw abortError();
+        const result = settled.result;
         if (result.error) {
           if (result.error.name === "AbortError") throw result.error;
           reportUnreadableSound();
