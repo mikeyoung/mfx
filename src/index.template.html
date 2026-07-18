@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon-192.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="./icon-192.png">
   <title>Mellotron Sound Effects</title>
   <style>
     :root {
@@ -107,11 +113,17 @@
 
     // Generated from the files in ./snd. Filenames stay in this small manifest;
     // compressed audio is cached on disk, never retained as a JavaScript heap cache.
+    const APP_VERSION = "__APP_VERSION__";
     const SOUND_FILES = __SOUND_FILES__;
     const SOUND_CACHE_NAME = "__CACHE_NAME__";
     const CHANNEL_COUNT = 4;
+    const LOOKAHEAD_DEPTH = 2;
+    const MAX_CONCURRENT_REQUESTS = 13;
+    const MAX_CONCURRENT_DECODES = 1;
+    const DECODE_TIMEOUT_MS = 15000;
+    const AUDIO_CONTEXT_CLOSE_TIMEOUT_MS = 3000;
+    const RECENT_SOUND_LIMIT = 12;
     const OUTPUT_VOLUME = 0.25;
-    const RETRY_DELAY_MS = 250;
     const DELAY_FEEDBACK = 0.48;
     const DELAY_TAIL_THRESHOLD = 0.001;
     const PAN_MOTION_CHANCE = 0.5;
@@ -124,6 +136,9 @@
 
     const goButton = document.querySelector("#go");
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const recentSounds = new Array(
+      Math.min(RECENT_SOUND_LIMIT, Math.max(0, SOUND_FILES.length - 1))
+    );
     const channels = Array.from({ length: CHANNEL_COUNT }, () => {
       return {
         audio: null,
@@ -137,9 +152,13 @@
         pitchGain: null,
         controller: null,
         cancel: null,
-        task: null
+        task: null,
+        lookahead: []
       };
     });
+    const requestQueue = [];
+    const decodeQueue = [];
+    const pendingLoads = new Set();
 
     let running = false;
     let audioContext = null;
@@ -148,6 +167,16 @@
     let startController = null;
     let errorCount = 0;
     let shutdownPromise = null;
+    let recentSoundCount = 0;
+    let recentSoundIndex = 0;
+    let activeRequestCount = 0;
+    let activeDecodeCount = 0;
+    let decodeGeneration = 0;
+    let playbackController = null;
+    let keepAliveSource = null;
+    let keepAliveGain = null;
+    let wakeLock = null;
+    let cacheWarningLogged = false;
 
     function logInfo(message) {
       console.info(`[Mellotron Sound Effects] ${message}`);
@@ -162,64 +191,393 @@
       else console.error(`[Mellotron Sound Effects] ${message}`);
     }
 
-    function handleCacheMessage(event) {
-      const message = event.data;
-      if (!message || message.cacheName !== SOUND_CACHE_NAME || !running) return;
+    logInfo(`Version ${APP_VERSION}`);
 
-      if (message.type === "CACHE_PROGRESS") {
-        logInfo(`Caching ${message.completed.toLocaleString()} / ${message.total.toLocaleString()}`);
-      } else if (message.type === "CACHE_RETRY_START") {
-        logWarning(`Cache retry ${message.attempt} / ${message.maxAttempts} · ${message.total.toLocaleString()} files`);
-      } else if (message.type === "CACHE_RETRY_PROGRESS") {
-        logWarning(`Cache retry ${message.attempt} / ${message.maxAttempts} · ${message.completed.toLocaleString()} / ${message.total.toLocaleString()}`);
-      } else if (message.type === "CACHE_COMPLETE") {
-        const suffix = message.errors
-          ? ` (${message.errors.toLocaleString()} could not be cached)`
-          : "";
-        logInfo(`Cache complete${suffix}`);
+    async function registerServiceWorker() {
+      if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+      try {
+        await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+      } catch (error) {
+        logWarning(`Offline support unavailable: ${error.message}`);
       }
     }
 
-    async function beginBackgroundCaching() {
-      if (!("serviceWorker" in navigator) || !("caches" in window)) {
-        logWarning("Cache unavailable");
-        return;
+    const ignoredMediaAction = () => {};
+    function ignoreMediaButtons() {
+      if (!("mediaSession" in navigator)) return;
+      const actions = [
+        "play", "pause", "stop", "seekbackward", "seekforward", "seekto",
+        "previoustrack", "nexttrack", "skipad", "togglemicrophone",
+        "togglecamera", "hangup"
+      ];
+      for (const action of actions) {
+        try {
+          navigator.mediaSession.setActionHandler(action, ignoredMediaAction);
+        } catch {
+          // Unsupported actions differ between browser versions.
+        }
       }
-
       try {
-        if (navigator.storage && navigator.storage.persist) {
-          void navigator.storage.persist().catch(() => {});
-        }
-
-        const registration = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
-        await navigator.serviceWorker.ready;
-        const worker = navigator.serviceWorker.controller
-          || registration.active
-          || registration.waiting;
-
-        if (!worker) {
-          throw new Error("The cache worker did not become active.");
-        }
-
-        // The structured-clone copy is only a short list of filenames. The worker
-        // downloads one file at a time and Cache Storage writes response bodies to disk.
-        worker.postMessage({
-          type: "CACHE_SOUNDS",
-          cacheName: SOUND_CACHE_NAME,
-          urls: SOUND_FILES.map(getSoundUrl)
-        });
+        navigator.mediaSession.playbackState = "none";
       } catch {
-        logWarning("Cache unavailable");
+        // Some implementations expose Media Session without playbackState.
       }
+    }
+
+    function wasRecentlyPlayed(sound) {
+      for (let index = 0; index < recentSoundCount; index += 1) {
+        if (recentSounds[index] === sound) return true;
+      }
+      return false;
     }
 
     function chooseSound() {
-      return SOUND_FILES[Math.floor(Math.random() * SOUND_FILES.length)];
+      if (SOUND_FILES.length === 1) return SOUND_FILES[0];
+
+      let index = Math.floor(Math.random() * SOUND_FILES.length);
+      let sound = SOUND_FILES[index];
+      while (wasRecentlyPlayed(sound)) {
+        index = (index + 1) % SOUND_FILES.length;
+        sound = SOUND_FILES[index];
+      }
+
+      if (recentSounds.length) {
+        recentSounds[recentSoundIndex] = sound;
+        recentSoundIndex = (recentSoundIndex + 1) % recentSounds.length;
+        if (recentSoundCount < recentSounds.length) recentSoundCount += 1;
+      }
+
+      return sound;
     }
 
     function getSoundUrl(relativePath) {
       const encodedPath = relativePath.split("/").map(encodeURIComponent).join("/");
       return new URL(`snd/${encodedPath}`, document.baseURI).href;
+    }
+
+    function pumpRequestQueue() {
+      while (activeRequestCount < MAX_CONCURRENT_REQUESTS && requestQueue.length) {
+        const entry = requestQueue.shift();
+        if (entry.signal?.aborted) {
+          entry.reject(abortError());
+          continue;
+        }
+
+        if (entry.signal && entry.onAbort) {
+          entry.signal.removeEventListener("abort", entry.onAbort);
+        }
+        entry.started = true;
+        activeRequestCount += 1;
+        Promise.resolve()
+          .then(entry.operation)
+          .then(entry.resolve, entry.reject)
+          .finally(() => {
+            activeRequestCount -= 1;
+            pumpRequestQueue();
+          });
+      }
+    }
+
+    function runLimitedRequest(operation, signal) {
+      return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(abortError());
+          return;
+        }
+
+        const entry = {
+          operation,
+          signal,
+          resolve,
+          reject,
+          started: false,
+          onAbort: null
+        };
+        entry.onAbort = () => {
+          if (entry.started) return;
+          const index = requestQueue.indexOf(entry);
+          if (index !== -1) requestQueue.splice(index, 1);
+          signal.removeEventListener("abort", entry.onAbort);
+          reject(abortError());
+        };
+        if (signal) signal.addEventListener("abort", entry.onAbort, { once: true });
+        requestQueue.push(entry);
+        pumpRequestQueue();
+      });
+    }
+
+    function decodeTimeoutError() {
+      const error = new Error("Audio decoding timed out.");
+      error.name = "DecodeTimeoutError";
+      return error;
+    }
+
+    function settleDecodeEntry(entry, method, value) {
+      if (entry.settled) return;
+      entry.settled = true;
+      if (entry.timer !== null) window.clearTimeout(entry.timer);
+      entry.timer = null;
+      entry.signal.removeEventListener("abort", entry.onAbort);
+      entry.encodedAudio = null;
+      entry.context = null;
+      entry.signal = null;
+      entry.onAbort = null;
+      entry.resolve = null;
+      entry.reject = null;
+      method(value);
+    }
+
+    function pumpDecodeQueue() {
+      while (activeDecodeCount < MAX_CONCURRENT_DECODES && decodeQueue.length) {
+        const entry = decodeQueue.shift();
+        if (entry.signal.aborted || entry.generation !== decodeGeneration) {
+          entry.context = null;
+          settleDecodeEntry(entry, entry.reject, abortError());
+          continue;
+        }
+
+        entry.started = true;
+        activeDecodeCount += 1;
+        const encodedAudio = entry.encodedAudio;
+        const context = entry.context;
+        entry.encodedAudio = null;
+        entry.context = null;
+        entry.timer = window.setTimeout(() => {
+          settleDecodeEntry(entry, entry.reject, decodeTimeoutError());
+        }, DECODE_TIMEOUT_MS);
+        Promise.resolve()
+          .then(() => context.decodeAudioData(encodedAudio))
+          .then(
+            (decodedAudio) => settleDecodeEntry(entry, entry.resolve, decodedAudio),
+            (error) => settleDecodeEntry(entry, entry.reject, error)
+          )
+          .finally(() => {
+            if (entry.generation === decodeGeneration) {
+              activeDecodeCount = Math.max(0, activeDecodeCount - 1);
+              pumpDecodeQueue();
+            }
+          });
+      }
+    }
+
+    function decodeAudioLimited(encodedAudio, signal) {
+      return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+          reject(abortError());
+          return;
+        }
+
+        const context = audioContext;
+        if (!context) {
+          reject(abortError());
+          return;
+        }
+
+        const entry = {
+          encodedAudio,
+          context,
+          signal,
+          resolve,
+          reject,
+          generation: decodeGeneration,
+          started: false,
+          settled: false,
+          timer: null,
+          onAbort: null
+        };
+        entry.onAbort = () => {
+          if (!entry.started) {
+            const index = decodeQueue.indexOf(entry);
+            if (index !== -1) decodeQueue.splice(index, 1);
+            entry.context = null;
+          }
+          settleDecodeEntry(entry, reject, abortError());
+          if (!entry.started) pumpDecodeQueue();
+        };
+        signal.addEventListener("abort", entry.onAbort, { once: true });
+        decodeQueue.push(entry);
+        pumpDecodeQueue();
+      });
+    }
+
+    function resetDecodeScheduler() {
+      decodeGeneration += 1;
+      activeDecodeCount = 0;
+      for (const entry of decodeQueue.splice(0)) {
+        entry.context = null;
+        settleDecodeEntry(entry, entry.reject, abortError());
+      }
+    }
+
+    function settleWithin(promise, timeoutMilliseconds) {
+      return new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        const finish = (completed) => {
+          if (settled) return;
+          settled = true;
+          if (timer !== null) window.clearTimeout(timer);
+          timer = null;
+          resolve(completed);
+        };
+        timer = window.setTimeout(() => finish(false), timeoutMilliseconds);
+        Promise.resolve(promise).then(
+          () => finish(true),
+          () => finish(true)
+        );
+      });
+    }
+
+    async function drainResponse(response) {
+      if (!response.body) {
+        await response.arrayBuffer();
+        return;
+      }
+
+      const reader = response.body.getReader();
+      try {
+        while (!(await reader.read()).done) {
+          // Deliberately retain no chunks while verifying the response body.
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    function warnCacheUnavailable(error) {
+      if (cacheWarningLogged) return;
+      cacheWarningLogged = true;
+      logWarning(`Sound cache unavailable: ${error.message}`);
+    }
+
+    async function openSoundCache() {
+      if (!("caches" in window)) return null;
+      try {
+        return await caches.open(SOUND_CACHE_NAME);
+      } catch (error) {
+        warnCacheUnavailable(error);
+        return null;
+      }
+    }
+
+    async function cacheSound(file, signal) {
+      const url = getSoundUrl(file);
+      const cache = await openSoundCache();
+      if (signal.aborted) throw abortError();
+
+      if (cache) {
+        try {
+          if (await cache.match(url)) return { file, url };
+        } catch (error) {
+          warnCacheUnavailable(error);
+        }
+      }
+
+      const response = await runLimitedRequest(
+        () => fetch(url, {
+          signal,
+          cache: "reload",
+          headers: { "X-MFX-Prefetch": "1" }
+        }),
+        signal
+      );
+      if (!response.ok) {
+        throw new Error(`Sound request failed with status ${response.status}.`);
+      }
+      if (signal.aborted) throw abortError();
+
+      if (cache) {
+        try {
+          await cache.put(url, response);
+          return { file, url };
+        } catch (error) {
+          warnCacheUnavailable(error);
+        }
+      }
+
+      // Cache Storage may be blocked or full. Consume the response so the lazy
+      // load is still verified, then let playback make its normal URL request.
+      try {
+        await drainResponse(response);
+      } catch {
+        // cache.put() may already have consumed the response before failing.
+      }
+      if (signal.aborted) throw abortError();
+      return { file, url };
+    }
+
+    function loadSoundAhead(file, signal) {
+      const task = cacheSound(file, signal).then(
+        (sound) => ({ sound, error: null }),
+        (error) => ({ sound: null, error })
+      );
+      pendingLoads.add(task);
+      void task.then(() => pendingLoads.delete(task));
+      return task;
+    }
+
+    function fillLookahead(channel, signal) {
+      while (running && !signal.aborted && channel.lookahead.length < LOOKAHEAD_DEPTH) {
+        const file = chooseSound();
+        channel.lookahead.push({ ready: loadSoundAhead(file, signal) });
+      }
+    }
+
+    async function evictCachedSound(url) {
+      const cache = await openSoundCache();
+      if (!cache) return;
+      try {
+        await cache.delete(url);
+      } catch {
+        // A failed eviction only means a later selection may skip it again.
+      }
+    }
+
+    function reportUnreadableSound() {
+      errorCount += 1;
+      logWarning(`${errorCount} unreadable sound${errorCount === 1 ? "" : "s"} skipped`);
+    }
+
+    async function takeNextLoadedSound(channel, signal) {
+      while (running && !signal.aborted) {
+        fillLookahead(channel, signal);
+        const entry = channel.lookahead.shift();
+        if (!entry) throw abortError();
+
+        // Once this becomes the current candidate, immediately restore two
+        // future entries. Four tracks therefore use at most twelve sound loads.
+        fillLookahead(channel, signal);
+        const result = await entry.ready;
+        if (!running || signal.aborted) throw abortError();
+        if (result.error) {
+          if (result.error.name === "AbortError") throw result.error;
+          reportUnreadableSound();
+          continue;
+        }
+        return result.sound;
+      }
+      throw abortError();
+    }
+
+    function yieldBeforePlaybackRetry(channel, signal) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = window.setTimeout(() => finish(), 0);
+        const onAbort = () => finish(abortError());
+        const cancel = onAbort;
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          if (timer !== null) window.clearTimeout(timer);
+          timer = null;
+          signal.removeEventListener("abort", onAbort);
+          if (channel.cancel === cancel) channel.cancel = null;
+          if (error) reject(error);
+          else resolve();
+        };
+        channel.cancel = cancel;
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
     }
 
     function choosePan() {
@@ -364,6 +722,87 @@
 
     function abortError() {
       return new DOMException("Playback stopped", "AbortError");
+    }
+
+    function startSilentLooper(context) {
+      const source = context.createBufferSource();
+      const gain = context.createGain();
+      try {
+        source.buffer = context.createBuffer(1, 1, context.sampleRate || 44100);
+        source.loop = true;
+        gain.gain.value = 0;
+        source.connect(gain);
+        gain.connect(context.destination);
+        source.start(0);
+        keepAliveSource = source;
+        keepAliveGain = gain;
+      } catch (error) {
+        try {
+          source.stop();
+        } catch {
+          // The source may not have started.
+        }
+        disconnectNode(source);
+        disconnectNode(gain);
+        source.buffer = null;
+        throw error;
+      }
+    }
+
+    function stopSilentLooper() {
+      const source = keepAliveSource;
+      const gain = keepAliveGain;
+      keepAliveSource = null;
+      keepAliveGain = null;
+      if (source) {
+        try {
+          source.stop();
+        } catch {
+          // The context may already have stopped the source.
+        }
+        disconnectNode(source);
+        source.buffer = null;
+      }
+      disconnectNode(gain);
+    }
+
+    function resumePlaybackContext() {
+      const context = audioContext;
+      if (!running || !context || context.state !== "suspended") return;
+      void Promise.resolve(context.resume()).catch(() => {});
+    }
+
+    async function requestScreenWakeLock() {
+      if (!running
+          || wakeLock
+          || document.visibilityState === "hidden"
+          || !("wakeLock" in navigator)) {
+        return;
+      }
+      try {
+        const lock = await navigator.wakeLock.request("screen");
+        if (!running) {
+          await lock.release();
+          return;
+        }
+        wakeLock = lock;
+        lock.addEventListener("release", () => {
+          if (wakeLock === lock) wakeLock = null;
+        }, { once: true });
+      } catch {
+        // Wake Lock is optional and is commonly denied in background tabs.
+      }
+    }
+
+    async function releaseScreenWakeLock() {
+      const lock = wakeLock;
+      wakeLock = null;
+      if (!lock) return;
+      try {
+        await lock.release();
+      } catch {
+        // It may already have been released by the browser.
+      }
     }
 
     function waitForAudioStart(context, signal) {
@@ -533,11 +972,9 @@
       if (channel.delayFeedback === route.delayFeedback) channel.delayFeedback = null;
     }
 
-    function releaseNativeSource(channel, audio, mediaSource, panner) {
-      if (channel.audio === audio) channel.audio = null;
+    function resetNativeSource(channel, audio, mediaSource, panner) {
       if (mediaSource) {
         disconnectNode(mediaSource);
-        if (channel.mediaSource === mediaSource) channel.mediaSource = null;
       }
       releasePanner(channel, panner);
       if (audio) {
@@ -551,21 +988,26 @@
       }
     }
 
-    function releaseNativeAudio(
-      channel,
-      audio,
-      mediaSource = channel.mediaSource,
-      panner = channel.panner,
-      delayRoute = channel.delayNode && channel.delayWet && channel.delayFeedback
-        ? {
-            delayNode: channel.delayNode,
-            delayWet: channel.delayWet,
-            delayFeedback: channel.delayFeedback
-          }
-        : null
-    ) {
-      releaseNativeSource(channel, audio, mediaSource, panner);
-      releaseDelayRoute(channel, delayRoute);
+    function getNativePool(channel) {
+      if (channel.audio && channel.mediaSource) {
+        return { audio: channel.audio, mediaSource: channel.mediaSource };
+      }
+
+      const audio = new Audio();
+      audio.preload = "none";
+      audio.volume = 1;
+      const mediaSource = audioContext.createMediaElementSource(audio);
+      channel.audio = audio;
+      channel.mediaSource = mediaSource;
+      return { audio, mediaSource };
+    }
+
+    function releaseNativePool(channel) {
+      const audio = channel.audio;
+      const mediaSource = channel.mediaSource;
+      channel.audio = null;
+      channel.mediaSource = null;
+      resetNativeSource(channel, audio, mediaSource, channel.panner);
     }
 
     function playNative(channel, url, playbackRate, delaySeconds, pan, panMoves) {
@@ -589,7 +1031,7 @@
             audio.removeEventListener("error", onError);
             audio.removeEventListener("loadedmetadata", onMetadata);
           }
-          releaseNativeSource(channel, audio, mediaSource, panner);
+          resetNativeSource(channel, audio, mediaSource, panner);
         };
 
         const cleanup = () => {
@@ -637,17 +1079,14 @@
         channel.cancel = cancel;
 
         try {
-          audio = new Audio();
-          channel.audio = audio;
-          mediaSource = audioContext.createMediaElementSource(audio);
-          channel.mediaSource = mediaSource;
+          const pool = getNativePool(channel);
+          audio = pool.audio;
+          mediaSource = pool.mediaSource;
           panner = audioContext.createStereoPanner();
           channel.panner = panner;
           delayRoute = createDelayRoute(channel, panner, delaySeconds);
           panner.pan.value = pan;
           mediaSource.connect(panner);
-          audio.preload = "none";
-          audio.volume = 1;
           audio.playbackRate = playbackRate;
           audio.preservesPitch = false;
           audio.addEventListener("ended", onEnded, { once: true });
@@ -710,8 +1149,9 @@
         encodedAudio = await response.arrayBuffer();
         response = null;
         if (controller.signal.aborted) throw abortError();
-        decodedAudio = await audioContext.decodeAudioData(encodedAudio);
+        const decodeTask = decodeAudioLimited(encodedAudio, controller.signal);
         encodedAudio = null;
+        decodedAudio = await decodeTask;
 
         if (controller.signal.aborted) throw abortError();
 
@@ -821,29 +1261,17 @@
       }
     }
 
-    function briefRetryPause(channel) {
-      return new Promise((resolve, reject) => {
-        let settled = false;
-        let timer = window.setTimeout(() => finish(), RETRY_DELAY_MS);
+    async function runChannel(channel, signal) {
+      while (running && !signal.aborted) {
+        let sound;
+        try {
+          sound = await takeNextLoadedSound(channel, signal);
+        } catch (error) {
+          if (!running || error.name === "AbortError") break;
+          reportUnreadableSound();
+          continue;
+        }
 
-        const cancel = () => finish(abortError());
-        const finish = (error) => {
-          if (settled) return;
-          settled = true;
-          if (timer !== null) window.clearTimeout(timer);
-          timer = null;
-          if (channel.cancel === cancel) channel.cancel = null;
-          if (error) reject(error);
-          else resolve();
-        };
-
-        channel.cancel = cancel;
-      });
-    }
-
-    async function runChannel(channel) {
-      while (running) {
-        const file = chooseSound();
         // Every choice is independent. A clip can be reversed, speed-shifted,
         // pitch-modulated, delayed, positioned, and moving all at once.
         const reversed = Math.random() < 0.5;
@@ -858,7 +1286,7 @@
           if (reversed || pitch) {
             await playBuffered(
               channel,
-              getSoundUrl(file),
+              sound.url,
               reversed,
               playbackRate,
               pitch,
@@ -869,7 +1297,7 @@
           } else {
             await playNative(
               channel,
-              getSoundUrl(file),
+              sound.url,
               playbackRate,
               delaySeconds,
               pan,
@@ -877,28 +1305,40 @@
             );
           }
         } catch (error) {
+          if (error.name === "DecodeTimeoutError") {
+            if (running) void stopAfterDecodeTimeout(error);
+            break;
+          }
           if (!running || error.name === "AbortError") break;
-          errorCount += 1;
-          logWarning(`${errorCount} unreadable sound${errorCount === 1 ? "" : "s"} skipped`);
+          reportUnreadableSound();
+          void evictCachedSound(sound.url);
           try {
-            await briefRetryPause(channel);
+            await yieldBeforePlaybackRetry(channel, signal);
           } catch (retryError) {
-            if (retryError.name === "AbortError") break;
+            if (!running || retryError.name === "AbortError") break;
             throw retryError;
           }
         }
       }
+    }
 
+    async function stopAfterDecodeTimeout(error) {
+      if (!running) return;
+      goButton.disabled = true;
+      await shutdown();
+      resetInterface();
+      logError("Playback stopped because the browser audio decoder did not respond.", error);
     }
 
     function releaseChannel(channel) {
+      channel.lookahead.length = 0;
       if (channel.cancel) {
         channel.cancel();
         return;
       }
 
       if (channel.controller) channel.controller.abort();
-      if (channel.audio) releaseNativeAudio(channel, channel.audio);
+      if (channel.audio) releaseNativePool(channel);
       if (channel.source) {
         try {
           channel.source.stop();
@@ -942,30 +1382,50 @@
       shutdownPromise = (async () => {
         running = false;
         if (startController) startController.abort();
+        if (playbackController) playbackController.abort();
         channels.forEach(releaseChannel);
 
-        // Do not permit a fresh session to reuse channel state until every old
-        // async load/decode has reached its finally block and dropped references.
-        await Promise.allSettled(
-          channels.map((channel) => channel.task).filter(Boolean)
-        );
-        channels.forEach((channel) => {
-          channel.task = null;
-        });
-
+        // Detach the graph before waiting for channel tasks. In particular, an
+        // active decode cannot be cancelled by Web Audio, so its application
+        // promise is aborted and its context is closed without waiting for it.
+        stopSilentLooper();
         const context = audioContext;
         audioContext = null;
         disconnectNode(outputGain);
         outputGain = null;
         disconnectNode(outputLimiter);
         outputLimiter = null;
+        resetDecodeScheduler();
 
+        let contextClosePromise = Promise.resolve();
         if (context && context.state !== "closed") {
+          context.onstatechange = null;
           try {
-            await context.close();
+            contextClosePromise = Promise.resolve(context.close()).catch(() => {});
           } catch {
-            // The document is leaving; there is nothing else to recover here.
+            // Dropping every application reference is the remaining fallback.
           }
+        }
+
+        // Do not permit a fresh session to reuse channel state until every old
+        // async load/decode has reached its finally block and dropped references.
+        await Promise.allSettled(
+          [
+            ...channels.map((channel) => channel.task).filter(Boolean),
+            ...pendingLoads
+          ]
+        );
+        channels.forEach((channel) => {
+          channel.task = null;
+          channel.lookahead.length = 0;
+          releaseNativePool(channel);
+        });
+        playbackController = null;
+        requestQueue.length = 0;
+        await releaseScreenWakeLock();
+
+        if (!(await settleWithin(contextClosePromise, AUDIO_CONTEXT_CLOSE_TIMEOUT_MS))) {
+          logWarning("Audio context cleanup continued beyond the shutdown deadline.");
         }
       })();
 
@@ -996,7 +1456,9 @@
       }
 
       const controller = new AbortController();
+      const sessionController = new AbortController();
       startController = controller;
+      playbackController = sessionController;
       goButton.disabled = false;
       goButton.textContent = "STOP";
       goButton.dataset.state = "running";
@@ -1026,10 +1488,15 @@
           throw abortError();
         }
 
-        void beginBackgroundCaching();
+        startSilentLooper(context);
+        context.onstatechange = resumePlaybackContext;
+        void requestScreenWakeLock();
+        if (navigator.storage?.persist) {
+          void navigator.storage.persist().catch(() => {});
+        }
 
         channels.forEach((channel) => {
-          channel.task = runChannel(channel);
+          channel.task = runChannel(channel, sessionController.signal);
         });
       } catch (error) {
         if (error.name === "AbortError") return;
@@ -1053,7 +1520,14 @@
       if (running) void stop();
       else void start();
     });
-    navigator.serviceWorker?.addEventListener("message", handleCacheMessage);
+    ignoreMediaButtons();
+    void registerServiceWorker();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      resumePlaybackContext();
+      void requestScreenWakeLock();
+    });
+    window.addEventListener("focus", resumePlaybackContext);
     window.addEventListener("pagehide", shutdown);
     window.addEventListener("pageshow", (event) => {
       if (event.persisted) resetInterface();

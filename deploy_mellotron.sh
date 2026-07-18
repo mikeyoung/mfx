@@ -28,14 +28,25 @@ for required in curl find xargs; do
 done
 
 [[ -d "$SRC/snd" ]] || { echo "ERROR: missing $SRC/snd" >&2; exit 1; }
-[[ -f "$SRC/index.html" ]] || { echo "ERROR: missing $SRC/index.html" >&2; exit 1; }
-[[ -f "$SRC/sw.js" ]] || { echo "ERROR: missing $SRC/sw.js" >&2; exit 1; }
+for site_file in index.html sw.js manifest.webmanifest icon-192.png icon-512.png VERSION; do
+  [[ -f "$SRC/$site_file" ]] || { echo "ERROR: missing $SRC/$site_file" >&2; exit 1; }
+done
 [[ -f "$NETRC" ]] || { echo "ERROR: missing credential file: $NETRC" >&2; exit 1; }
 
 # A changed sound requires regenerating index.html and sw.js before deployment.
 if [[ -n "$(find "$SRC/snd" -type f -newer "$SRC/index.html" -print -quit)" \
       || -n "$(find "$SRC/snd" -type f -newer "$SRC/sw.js" -print -quit)" ]]; then
   echo "ERROR: sound files are newer than index.html or sw.js; rebuild before deploying." >&2
+  exit 1
+fi
+if [[ "$SRC/src/index.template.html" -nt "$SRC/index.html" \
+      || "$SRC/src/sw.template.js" -nt "$SRC/sw.js" \
+      || "$SRC/VERSION" -nt "$SRC/index.html" \
+      || "$SRC/VERSION" -nt "$SRC/sw.js" \
+      || "$SRC/manifest.webmanifest" -nt "$SRC/sw.js" \
+      || "$SRC/icon-192.png" -nt "$SRC/sw.js" \
+      || "$SRC/icon-512.png" -nt "$SRC/sw.js" ]]; then
+  echo "ERROR: PWA sources are newer than generated output; rebuild before deploying." >&2
   exit 1
 fi
 
@@ -48,7 +59,7 @@ trap 'rm -rf -- "$TMP_DIR"' EXIT
 cd "$SRC"
 : > "$FAILURES"
 {
-  printf 'index.html\0sw.js\0'
+  printf 'index.html\0sw.js\0manifest.webmanifest\0icon-192.png\0icon-512.png\0'
   find snd -type f -print0
 } > "$FILE_LIST"
 
@@ -84,7 +95,7 @@ export BASE NETRC FAILURES
 export -f encode_url_path upload_one
 
 sound_count="$(find snd -type f | wc -l | tr -d '[:space:]')"
-total=$((sound_count + 2))
+total=$((sound_count + 5))
 echo "Uploading $total files to ${BASE}/ with $PARALLEL_UPLOADS connections..."
 
 xargs -0 -P "$PARALLEL_UPLOADS" -I '{}' bash -c 'upload_one "$1"' _ '{}' < "$FILE_LIST"
@@ -119,5 +130,6 @@ verify_url() {
 echo "Verifying public deployment..."
 verify_url "$LIVE" "/mfx/"
 verify_url "${LIVE}sw.js" "/mfx/sw.js"
+verify_url "${LIVE}manifest.webmanifest" "/mfx/manifest.webmanifest"
 
 echo "DONE: uploaded $total/$total files to $LIVE"
