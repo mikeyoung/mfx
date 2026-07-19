@@ -127,6 +127,28 @@
       background: #fff;
     }
 
+    .offline-note {
+      position: fixed;
+      left: 50%;
+      bottom: calc(clamp(1.25rem, 5vh, 3rem) + env(safe-area-inset-bottom, 0px));
+      width: min(42rem, calc(100% - 2rem));
+      margin: 0;
+      transform: translateX(-50%);
+      font-size: clamp(0.7rem, 2vw, 0.8rem);
+      line-height: 1.4;
+      text-align: center;
+    }
+
+    .offline-note a,
+    .offline-note a:visited,
+    .offline-note a:hover,
+    .offline-note a:focus,
+    .offline-note a:active {
+      color: #fff;
+      text-decoration: underline;
+      text-decoration-color: #fff;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       #go {
         transition: none;
@@ -146,6 +168,7 @@
   <main>
     <h1>Mellotron<br>Sound Effects</h1>
     <button id="go" type="button" disabled>GO!</button>
+    <p class="offline-note">This is a <a href="https://adeocode.com/blog/how-to-install-a-pwa-on-iphone-android-desktop" target="_blank" rel="noopener noreferrer">progressive web app</a> and can be used offline. It runs best when installed locally.</p>
   </main>
 
   <script>

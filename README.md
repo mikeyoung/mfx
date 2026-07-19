@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.6**, with `9` as the major version and `6` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.7**, with `9` as the major version and `7` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.6 must be 9.7.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.7 must be 9.8.
 
 ## Playback
 
