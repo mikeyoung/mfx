@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.5**, with `9` as the major version and `5` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.6**, with `9` as the major version and `6` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.5 must be 9.6.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.6 must be 9.7.
 
 ## Playback
 
@@ -44,7 +44,7 @@ On page load, a text-free full-screen loader shows the sound-pack transfer as a 
 
 ## PWA
 
-The app includes a manifest, offline app shell, install icons, and a service worker. Use the browser's install command to run it as a standalone PWA. Audio still requires the initial **GO!** interaction.
+The app includes a manifest, offline app shell, install icons, and a service worker. The site-local `web.config` registers the generated `.pack` file as static binary content on IIS. Use the browser's install command to run it as a standalone PWA. Audio still requires the initial **GO!** interaction.
 
 The loading takeover is dismissed only after the current app shell and complete content-versioned sound pack are verified in persistent browser storage. A subsequent launch can therefore initialize successfully with no network available. The app requests persistent storage on supporting browsers, although the browser or operating system retains final authority over storage eviction.
 
@@ -72,7 +72,7 @@ The build writes the ignored deployment artifact `sounds.pack` plus `index.html`
 
 ## Deploy
 
-`deploy_mellotron.sh` uploads the generated page, worker, PWA manifest, icons, and single `sounds.pack` file to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
+`deploy_mellotron.sh` uploads the generated page, worker, PWA manifest, icons, IIS MIME configuration, and single `sounds.pack` file to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
 
 ```bash
 bash "M:/backup/webdev/chaotic sound effects/deploy_mellotron.sh"
@@ -92,6 +92,7 @@ sw.js                  Generated cache service worker
 manifest.webmanifest   PWA metadata
 icon-192.png           PWA and touch icon
 icon-512.png           Large and maskable PWA icon
+web.config             Site-local IIS MIME mapping for the sound pack
 snd/                   Audio library
 sounds.pack            Ignored, generated indexed audio pack
 src/                   Source templates

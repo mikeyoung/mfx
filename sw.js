@@ -1,8 +1,8 @@
 "use strict";
 
-const APP_VERSION = "9.5";
+const APP_VERSION = "9.6";
 const SOUND_CACHE_NAME = "mfx-sound-pack-v1-c50b03359543";
-const SHELL_CACHE_NAME = "mfx-shell-f644ae385d36";
+const SHELL_CACHE_NAME = "mfx-shell-27b540de1374";
 const SOUND_CACHE_PREFIX = "mfx-sound-pack-v1-";
 const SHELL_CACHE_PREFIX = "mfx-shell-";
 const LEGACY_SOUND_CACHE_PREFIXES = ["mfx-sounds-v2-", "chaotic-sound-effects-"];

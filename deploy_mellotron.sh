@@ -38,7 +38,7 @@ for required in awk cp curl find mkdir mktemp mv sed sha256sum tr wc xargs; do
 done
 
 [[ -d "$SRC/snd" ]] || { echo "ERROR: missing $SRC/snd" >&2; exit 1; }
-for site_file in index.html sw.js manifest.webmanifest icon-192.png icon-512.png sounds.pack VERSION; do
+for site_file in index.html sw.js manifest.webmanifest icon-192.png icon-512.png web.config sounds.pack VERSION; do
   [[ -f "$SRC/$site_file" ]] || { echo "ERROR: missing $SRC/$site_file" >&2; exit 1; }
 done
 if [[ "$MODE" == "deploy" ]]; then
@@ -75,7 +75,7 @@ trap 'rm -rf -- "$TMP_DIR"' EXIT
 cd "$SRC"
 : > "$FAILURES"
 {
-  printf 'index.html\0sw.js\0manifest.webmanifest\0icon-192.png\0icon-512.png\0sounds.pack\0'
+  printf 'index.html\0sw.js\0manifest.webmanifest\0icon-192.png\0icon-512.png\0web.config\0sounds.pack\0'
 } > "$ALL_FILES"
 
 : > "$CURRENT_MANIFEST"
@@ -135,7 +135,7 @@ upload_one() {
 export BASE NETRC FAILURES
 export -f encode_url_path upload_one
 
-total=6
+total=7
 if [[ -f "$STATE_MANIFEST" ]]; then
   echo "Uploading $changed_count modified file(s) out of $total to ${BASE}/ with $PARALLEL_UPLOADS connections..."
 else
