@@ -11,8 +11,30 @@ const SHELL_ASSETS = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
+  "./icon-16.png",
+  "./icon-32.png",
+  "./icon-48.png",
+  "./icon-57.png",
+  "./icon-60.png",
+  "./icon-72.png",
+  "./icon-76.png",
+  "./icon-96.png",
+  "./icon-114.png",
+  "./icon-120.png",
+  "./icon-128.png",
+  "./icon-144.png",
+  "./icon-152.png",
+  "./icon-167.png",
+  "./icon-180.png",
   "./icon-192.png",
-  "./icon-512.png"
+  "./icon-196.png",
+  "./icon-256.png",
+  "./icon-384.png",
+  "./icon-512.png",
+  "./icon-1024.png",
+  "./icon-maskable-192.png",
+  "./icon-maskable-512.png",
+  "./apple-touch-icon.png"
 ].map((path) => new URL(path, self.registration.scope).href);
 
 const networkWaiters = [];
@@ -121,3 +143,4 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(handleShellRequest(request, shellUrl.href));
   }
 });
+

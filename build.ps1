@@ -10,8 +10,11 @@ $serviceWorkerOutputPath = Join-Path $projectRoot 'sw.js'
 $soundPackPath = Join-Path $projectRoot 'sounds.pack'
 $soundPackTempPath = Join-Path $projectRoot 'sounds.pack.tmp'
 $manifestPath = Join-Path $projectRoot 'manifest.webmanifest'
-$icon192Path = Join-Path $projectRoot 'icon-192.png'
-$icon512Path = Join-Path $projectRoot 'icon-512.png'
+$iconSizes = @(16, 32, 48, 57, 60, 72, 76, 96, 114, 120, 128, 144, 152, 167, 180, 192, 196, 256, 384, 512, 1024)
+$iconPaths = $iconSizes | ForEach-Object { Join-Path $projectRoot ("icon-$_.png") }
+$appleTouchIconPath = Join-Path $projectRoot 'apple-touch-icon.png'
+$iconMask192Path = Join-Path $projectRoot 'icon-maskable-192.png'
+$iconMask512Path = Join-Path $projectRoot 'icon-maskable-512.png'
 $appVersionPath = Join-Path $projectRoot 'VERSION'
 $supportedExtensions = @('.mp3')
 
@@ -24,7 +27,7 @@ if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $serviceWorkerTemplatePath -PathType Leaf)) {
   throw "Service-worker template not found: $serviceWorkerTemplatePath"
 }
-foreach ($pwaAsset in @($manifestPath, $icon192Path, $icon512Path)) {
+foreach ($pwaAsset in @($manifestPath) + $iconPaths + @($appleTouchIconPath, $iconMask192Path, $iconMask512Path)) {
   if (-not (Test-Path -LiteralPath $pwaAsset -PathType Leaf)) {
     throw "PWA asset not found: $pwaAsset"
   }
@@ -37,7 +40,7 @@ if ($appVersion -notmatch '^\d+\.\d+$') {
   throw "VERSION must contain a major.minor number, such as 9.1."
 }
 
-$soundRoot = (Resolve-Path -LiteralPath $soundDirectory).Path.TrimEnd('\')
+$soundRoot = (Resolve-Path -LiteralPath $soundDirectory).Path.TrimEnd('\\')
 $audioFiles = @(
   Get-ChildItem -LiteralPath $soundRoot -File -Recurse |
     Where-Object { $supportedExtensions -contains $_.Extension.ToLowerInvariant() } |
@@ -50,7 +53,7 @@ if ($audioFiles.Count -eq 0) {
 
 $files = @(
   $audioFiles |
-    ForEach-Object { $_.FullName.Substring($soundRoot.Length + 1).Replace('\', '/') }
+    ForEach-Object { $_.FullName.Substring($soundRoot.Length + 1).Replace('\\', '/') }
 )
 $soundRecords = [System.Collections.Generic.List[object]]::new($audioFiles.Count)
 $packStream = $null
@@ -108,10 +111,8 @@ $shellVersionRecords = @($shortHash, "app-version|$appVersion")
 foreach ($shellSource in @(
   $templatePath,
   $serviceWorkerTemplatePath,
-  $manifestPath,
-  $icon192Path,
-  $icon512Path
-)) {
+  $manifestPath
+) + $iconPaths + @($appleTouchIconPath, $iconMask192Path, $iconMask512Path)) {
   $shellBytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $shellSource).Path)
   $shellDigest = [System.Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData($shellBytes)
