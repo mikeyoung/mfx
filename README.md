@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.4**, with `9` as the major version and `4` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.5**, with `9` as the major version and `5` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.4 must be 9.5.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.5 must be 9.6.
 
 ## Playback
 
@@ -24,19 +24,21 @@ Each new sound independently receives randomized processing:
 - optional moderate oscillator-based pitch modulation
 - 25% per-track gain followed by a shared peak limiter
 
-Each track keeps exactly two future sounds loading while the current sound plays. Playback advances only after the current sound and any delay trail have finished.
+On page load, a text-free full-screen loader shows the sound-pack transfer as a hard-edged, full-height white bar growing across a black background. The controls appear only after both the complete sound library and the PWA app shell have been durably stored for offline use. Playback advances only after the current sound and any delay trail have finished.
 
 ## Performance design
 
 - Playback is capped at four tracks.
-- Each track lazily loads two sounds ahead; the full library is never preloaded.
-- A track uses whichever look-ahead request becomes ready first, so one slow file cannot block a ready file behind it.
-- Failed or stalled loads have a bounded deadline, are skipped, and are immediately replaced until a usable sound is found.
-- Network work is capped at 13 concurrent requests in both the page and service worker.
+- The 1,260 original MP3 byte streams are concatenated without recompression into one approximately 45 MiB `sounds.pack` file.
+- The generated page embeds a compact filename, byte-offset, and byte-length map. Each selected clip is recovered locally with `File.slice()`.
+- The pack is streamed into the browser's Origin Private File System when available, with Cache Storage as the feature-detected fallback.
+- The complete sound library therefore requires one network request on first use and no per-clip network requests afterward.
+- A failed or interrupted pack transfer is removed and retried up to three times; incomplete packs are never accepted as ready.
+- The content-derived pack name remains unchanged across code releases, preventing code-version updates from downloading the sounds again.
 - Forward sounds without oscillator pitch use the browser's native media pipeline.
 - Reverse and pitch-modulated sounds use short-lived decoded Web Audio buffers.
 - Sources, buffers, timers, listeners, automation, and audio nodes are explicitly released after every sound.
-- Successfully lazy-loaded audio is stored on disk with Cache Storage rather than retained in JavaScript memory.
+- Only a small compressed slice and any active decoded clip are retained for playback; the complete pack remains disk-backed where OPFS is available.
 - A one-frame silent Web Audio loop and Screen Wake Lock provide best-effort continuous operation while playback is active. Browsers and operating systems may still suspend background pages.
 - Media-session buttons are explicitly ignored.
 
@@ -44,7 +46,9 @@ Each track keeps exactly two future sounds loading while the current sound plays
 
 The app includes a manifest, offline app shell, install icons, and a service worker. Use the browser's install command to run it as a standalone PWA. Audio still requires the initial **GO!** interaction.
 
-The app shell is versioned. When the page detects a different application version from the previous visit, it removes stale shell caches, requests a service-worker update, and performs one guarded reload. Navigations use the network first with an offline cache fallback.
+The loading takeover is dismissed only after the current app shell and complete content-versioned sound pack are verified in persistent browser storage. A subsequent launch can therefore initialize successfully with no network available. The app requests persistent storage on supporting browsers, although the browser or operating system retains final authority over storage eviction.
+
+App-shell updates use the service worker's atomic install/activate lifecycle: the previous offline shell remains intact until the replacement is complete. Navigations use the network first with an offline cache fallback. Sound-pack cache keys are derived from audio content rather than the application version, so a code-only update does not redownload the library.
 
 ## Run locally
 
@@ -58,17 +62,17 @@ Then open <http://localhost:8080/>. Browsers require the initial **GO!** interac
 
 ## Rebuild after changing `snd/`
 
-The sound manifest and cache version are generated from the files in `snd/`:
+The indexed sound pack, manifest, and content-derived cache version are generated from the files in `snd/`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The build writes `index.html` and `sw.js`, including versioned sound and app-shell cache names. Commit those generated files together with source or sound-file changes.
+The build writes the ignored deployment artifact `sounds.pack` plus `index.html` and `sw.js`. Commit the generated page and worker together with source or sound-file changes; rebuild the pack before deployment.
 
 ## Deploy
 
-`deploy_mellotron.sh` uploads the generated page, worker, PWA manifest, icons, and `snd/` to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints.
+`deploy_mellotron.sh` uploads the generated page, worker, PWA manifest, icons, and single `sounds.pack` file to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
 
 ```bash
 bash "M:/backup/webdev/chaotic sound effects/deploy_mellotron.sh"
@@ -89,8 +93,9 @@ manifest.webmanifest   PWA metadata
 icon-192.png           PWA and touch icon
 icon-512.png           Large and maskable PWA icon
 snd/                   Audio library
+sounds.pack            Ignored, generated indexed audio pack
 src/                   Source templates
-build.ps1              Manifest and cache-version generator
+build.ps1              Pack, manifest, and cache-version generator
 VERSION                Current major.minor application version
 deploy_mellotron.sh    Guarded FTPS deployment
 ```

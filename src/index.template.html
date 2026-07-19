@@ -23,6 +23,12 @@
       box-sizing: border-box;
     }
 
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+    }
+
     body {
       min-height: 100vh;
       margin: 0;
@@ -30,6 +36,32 @@
       place-items: center;
       overflow-x: hidden;
       background: #000;
+    }
+
+    body[data-loading="true"] main {
+      visibility: hidden;
+    }
+
+    #loading-screen {
+      position: fixed;
+      z-index: 100;
+      inset: 0;
+      overflow: hidden;
+      background: #000;
+      contain: strict;
+    }
+
+    #loading-screen[hidden] {
+      display: none;
+    }
+
+    #loading-progress {
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      transform: scaleX(0);
+      transform-origin: left center;
+      will-change: transform;
     }
 
     main {
@@ -102,28 +134,48 @@
     }
   </style>
 </head>
-<body>
+<body data-loading="true">
+  <div
+    id="loading-screen"
+    role="progressbar"
+    aria-label="Loading"
+    aria-valuemin="0"
+    aria-valuemax="100"
+    aria-valuenow="0"
+  ><div id="loading-progress"></div></div>
   <main>
     <h1>Mellotron<br>Sound Effects</h1>
-    <button id="go" type="button">GO!</button>
+    <button id="go" type="button" disabled>GO!</button>
   </main>
 
   <script>
     "use strict";
 
-    // Generated from the files in ./snd. Filenames stay in this small manifest;
-    // compressed audio is cached on disk, never retained as a JavaScript heap cache.
+    // Generated from ./snd. The manifest maps each original MP3 to one byte range
+    // in a single content-versioned pack stored locally by the browser.
     const APP_VERSION = "__APP_VERSION__";
     const SHELL_CACHE_NAME = "__SHELL_CACHE_NAME__";
-    const SHELL_CACHE_PREFIX = "mfx-shell-";
     const VERSION_STORAGE_KEY = "mfx-version";
-    const VERSION_RELOAD_KEY = "mfx-version-reload";
     const SOUND_FILES = __SOUND_FILES__;
     const SOUND_CACHE_NAME = "__CACHE_NAME__";
+    const SOUND_PACK_VERSION = "__SOUND_PACK_VERSION__";
+    const SOUND_PACK_SIZE = __SOUND_PACK_SIZE__;
+    const SOUND_PACK_URL = new URL(
+      `sounds.pack?v=${SOUND_PACK_VERSION}`,
+      document.baseURI
+    ).href;
+    const SOUND_PACK_FILE_NAME = `sounds-${SOUND_PACK_VERSION}.pack`;
+    const SOUND_PACK_RETRY_LIMIT = 3;
+    const SOUND_PACK_DIRECTORY = "mfx-sound-packs";
+    const SHELL_ASSET_PATHS = [
+      "./",
+      "./index.html",
+      "./manifest.webmanifest",
+      "./icon-192.png",
+      "./icon-512.png"
+    ];
+    const PACK_PROGRESS_SHARE = 0.98;
     const CHANNEL_COUNT = 4;
-    const LOOKAHEAD_DEPTH = 2;
-    const MAX_CONCURRENT_REQUESTS = 13;
-    const SOUND_LOAD_TIMEOUT_MS = 6000;
     const MAX_CONCURRENT_DECODES = 1;
     const DECODE_TIMEOUT_MS = 15000;
     const AUDIO_CONTEXT_CLOSE_TIMEOUT_MS = 3000;
@@ -140,6 +192,8 @@
     const AUDIO_START_TIMEOUT_MS = 5000;
 
     const goButton = document.querySelector("#go");
+    const loadingScreen = document.querySelector("#loading-screen");
+    const loadingProgress = document.querySelector("#loading-progress");
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     const recentSounds = new Array(
       Math.min(RECENT_SOUND_LIMIT, Math.max(0, SOUND_FILES.length - 1))
@@ -157,13 +211,10 @@
         pitchGain: null,
         controller: null,
         cancel: null,
-        task: null,
-        lookahead: []
+        task: null
       };
     });
-    const requestQueue = [];
     const decodeQueue = [];
-    const pendingLoads = new Set();
 
     let running = false;
     let audioContext = null;
@@ -174,7 +225,6 @@
     let shutdownPromise = null;
     let recentSoundCount = 0;
     let recentSoundIndex = 0;
-    let activeRequestCount = 0;
     let activeDecodeCount = 0;
     let decodeGeneration = 0;
     let playbackController = null;
@@ -182,6 +232,11 @@
     let keepAliveGain = null;
     let wakeLock = null;
     let cacheWarningLogged = false;
+    let soundPackFile = null;
+    let soundPackPreloadPromise = null;
+    let soundPackPreloadController = null;
+    let applicationCachePromise = null;
+    let loadingComplete = false;
 
     function logInfo(message) {
       console.info(`[Mellotron Sound Effects] ${message}`);
@@ -196,15 +251,89 @@
       else console.error(`[Mellotron Sound Effects] ${message}`);
     }
 
+    function setLoadingProgress(fraction) {
+      if (loadingComplete) return;
+      const bounded = Math.min(1, Math.max(0, Number(fraction) || 0));
+      loadingProgress.style.transform = `scaleX(${bounded})`;
+      loadingScreen.setAttribute("aria-valuenow", String(Math.round(bounded * 100)));
+    }
+
+    function setSoundPackProgress(loadedBytes) {
+      setLoadingProgress((loadedBytes / SOUND_PACK_SIZE) * PACK_PROGRESS_SHARE);
+    }
+
+    function finishLoadingScreen() {
+      if (loadingComplete) return;
+      setLoadingProgress(1);
+      loadingComplete = true;
+      loadingScreen.hidden = true;
+      loadingScreen.setAttribute("aria-hidden", "true");
+      loadingProgress.style.willChange = "auto";
+      document.body.dataset.loading = "false";
+      goButton.disabled = false;
+    }
+
     logInfo(`Version ${APP_VERSION}`);
 
+    function waitForWorkerActivation(worker) {
+      if (!worker || worker.state === "activated") return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const onStateChange = () => {
+          if (worker.state === "activated") finish();
+          else if (worker.state === "redundant") {
+            finish(new Error("The offline worker could not be installed."));
+          }
+        };
+        const finish = (error = null) => {
+          worker.removeEventListener("statechange", onStateChange);
+          if (error) reject(error);
+          else resolve();
+        };
+        worker.addEventListener("statechange", onStateChange);
+        onStateChange();
+      });
+    }
+
     async function registerServiceWorker() {
-      if (!("serviceWorker" in navigator) || location.protocol === "file:") return null;
+      if (!("serviceWorker" in navigator) || location.protocol === "file:") {
+        throw new Error("Service workers are unavailable.");
+      }
       try {
         return await navigator.serviceWorker.register("./sw.js", { scope: "./" });
       } catch (error) {
-        logWarning(`Offline support unavailable: ${error.message}`);
-        return null;
+        throw new Error(`Offline support unavailable: ${error.message}`);
+      }
+    }
+
+    async function offlineShellIsReady() {
+      if (!("caches" in window)) return false;
+      try {
+        const cache = await caches.open(SHELL_CACHE_NAME);
+        const matches = await Promise.all(SHELL_ASSET_PATHS.map((path) => (
+          cache.match(new URL(path, document.baseURI).href)
+        )));
+        return matches.every(Boolean);
+      } catch {
+        return false;
+      }
+    }
+
+    async function ensureOfflineShell(registration) {
+      if (!("caches" in window)) {
+        throw new Error("Cache Storage is unavailable.");
+      }
+
+      let candidate = registration.installing || registration.waiting;
+      if (candidate) await waitForWorkerActivation(candidate);
+      await navigator.serviceWorker.ready;
+      if (await offlineShellIsReady()) return;
+
+      await registration.update();
+      candidate = registration.installing || registration.waiting;
+      if (candidate) await waitForWorkerActivation(candidate);
+      await navigator.serviceWorker.ready;
+      if (!(await offlineShellIsReady())) {
+        throw new Error("The complete offline app shell is unavailable.");
       }
     }
 
@@ -218,38 +347,15 @@
       }
 
       const registration = await registerServiceWorker();
-      if (!previousVersion || previousVersion === APP_VERSION) return;
-
-      logInfo(`Version changed from ${previousVersion} to ${APP_VERSION}; refreshing caches`);
-      if ("caches" in window) {
-        try {
-          const cacheNames = await caches.keys();
-          await Promise.all(cacheNames.map((name) => (
-            name.startsWith(SHELL_CACHE_PREFIX) && name !== SHELL_CACHE_NAME
-              ? caches.delete(name)
-              : Promise.resolve(false)
-          )));
-        } catch (error) {
-          logWarning(`Stale app cache cleanup failed: ${error.message}`);
-        }
-      }
-
-      if (registration) {
+      if (previousVersion && previousVersion !== APP_VERSION) {
+        logInfo(`Version changed from ${previousVersion} to ${APP_VERSION}; refreshing app shell`);
         try {
           await registration.update();
         } catch (error) {
           logWarning(`App update check failed: ${error.message}`);
         }
       }
-
-      try {
-        if (sessionStorage.getItem(VERSION_RELOAD_KEY) !== APP_VERSION) {
-          sessionStorage.setItem(VERSION_RELOAD_KEY, APP_VERSION);
-          location.reload();
-        }
-      } catch {
-        // A storage-restricted browser still receives network-first navigations.
-      }
+      await ensureOfflineShell(registration);
     }
 
     const ignoredMediaAction = () => {};
@@ -300,68 +406,6 @@
       return sound;
     }
 
-    function getSoundUrl(relativePath) {
-      const encodedPath = relativePath.split("/").map(encodeURIComponent).join("/");
-      return new URL(`snd/${encodedPath}`, document.baseURI).href;
-    }
-
-    function pumpRequestQueue() {
-      while (activeRequestCount < MAX_CONCURRENT_REQUESTS && requestQueue.length) {
-        const entry = requestQueue.shift();
-        if (entry.signal?.aborted) {
-          entry.reject(abortError());
-          continue;
-        }
-
-        if (entry.signal && entry.onAbort) {
-          entry.signal.removeEventListener("abort", entry.onAbort);
-        }
-        entry.started = true;
-        activeRequestCount += 1;
-        Promise.resolve()
-          .then(entry.operation)
-          .then(entry.resolve, entry.reject)
-          .finally(() => {
-            activeRequestCount -= 1;
-            pumpRequestQueue();
-          });
-      }
-    }
-
-    function runLimitedRequest(operation, signal) {
-      return new Promise((resolve, reject) => {
-        if (signal?.aborted) {
-          reject(abortError());
-          return;
-        }
-
-        const entry = {
-          operation,
-          signal,
-          resolve,
-          reject,
-          started: false,
-          onAbort: null
-        };
-        entry.onAbort = () => {
-          if (entry.started) return;
-          const index = requestQueue.indexOf(entry);
-          if (index !== -1) requestQueue.splice(index, 1);
-          signal.removeEventListener("abort", entry.onAbort);
-          reject(abortError());
-        };
-        if (signal) signal.addEventListener("abort", entry.onAbort, { once: true });
-        requestQueue.push(entry);
-        pumpRequestQueue();
-      });
-    }
-
-    function soundLoadTimeoutError() {
-      const error = new Error("Sound loading timed out.");
-      error.name = "SoundLoadTimeoutError";
-      return error;
-    }
-
     function waitForAbortable(promise, signal) {
       return new Promise((resolve, reject) => {
         let settled = false;
@@ -389,36 +433,6 @@
           (error) => finish(reject, error)
         );
       });
-    }
-
-    async function runSoundLoadWithDeadline(operation, signal) {
-      if (signal.aborted) throw abortError();
-
-      const controller = new AbortController();
-      let timedOut = false;
-      const onAbort = () => controller.abort();
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) onAbort();
-
-      const timer = window.setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, SOUND_LOAD_TIMEOUT_MS);
-
-      try {
-        return await waitForAbortable(
-          Promise.resolve().then(() => operation(controller.signal)),
-          controller.signal
-        );
-      } catch (error) {
-        if (signal.aborted) throw abortError();
-        if (timedOut) throw soundLoadTimeoutError();
-        throw error;
-      } finally {
-        window.clearTimeout(timer);
-        signal.removeEventListener("abort", onAbort);
-        controller.abort();
-      }
     }
 
     function decodeTimeoutError() {
@@ -543,22 +557,6 @@
       });
     }
 
-    async function drainResponse(response) {
-      if (!response.body) {
-        await response.arrayBuffer();
-        return;
-      }
-
-      const reader = response.body.getReader();
-      try {
-        while (!(await reader.read()).done) {
-          // Deliberately retain no chunks while verifying the response body.
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    }
-
     function warnCacheUnavailable(error) {
       if (cacheWarningLogged) return;
       cacheWarningLogged = true;
@@ -575,120 +573,303 @@
       }
     }
 
-    function cacheSound(file, signal) {
-      return runSoundLoadWithDeadline(async (loadSignal) => {
-        const url = getSoundUrl(file);
-        const cache = await waitForAbortable(openSoundCache(), loadSignal);
-        if (loadSignal.aborted) throw abortError();
-
-        if (cache) {
-          try {
-            if (await waitForAbortable(cache.match(url), loadSignal)) {
-              return { file, url };
-            }
-          } catch (error) {
-            if (loadSignal.aborted) throw error;
-            warnCacheUnavailable(error);
-          }
-        }
-
-        const response = await runLimitedRequest(
-          () => fetch(url, {
-            signal: loadSignal,
-            cache: "reload",
-            headers: { "X-MFX-Prefetch": "1" }
-          }),
-          loadSignal
-        );
-        if (!response.ok) {
-          throw new Error(`Sound request failed with status ${response.status}.`);
-        }
-        if (loadSignal.aborted) throw abortError();
-
-        if (cache) {
-          try {
-            await waitForAbortable(cache.put(url, response), loadSignal);
-            return { file, url };
-          } catch (error) {
-            if (loadSignal.aborted) throw error;
-            warnCacheUnavailable(error);
-          }
-        }
-
-        // Cache Storage may be blocked or full. Consume the response so the lazy
-        // load is still verified, then let playback make its normal URL request.
-        try {
-          await drainResponse(response);
-        } catch {
-          // cache.put() may already have consumed the response before failing.
-        }
-        if (loadSignal.aborted) throw abortError();
-        return { file, url };
-      }, signal);
-    }
-
-    function loadSoundAhead(file, signal) {
-      const task = cacheSound(file, signal).then(
-        (sound) => ({ sound, error: null }),
-        (error) => ({ sound: null, error })
-      );
-      pendingLoads.add(task);
-      void task.then(() => pendingLoads.delete(task));
-      return task;
-    }
-
-    function fillLookahead(channel, signal) {
-      while (running && !signal.aborted && channel.lookahead.length < LOOKAHEAD_DEPTH) {
-        const file = chooseSound();
-        const entry = { ready: null };
-        entry.ready = loadSoundAhead(file, signal).then((result) => ({ entry, result }));
-        channel.lookahead.push(entry);
-      }
-    }
-
-    async function evictCachedSound(url) {
-      const cache = await openSoundCache();
-      if (!cache) return;
-      try {
-        await cache.delete(url);
-      } catch {
-        // A failed eviction only means a later selection may skip it again.
-      }
-    }
-
     function reportUnreadableSound() {
       errorCount += 1;
       logWarning(`${errorCount} unreadable sound${errorCount === 1 ? "" : "s"} skipped`);
     }
 
-    async function takeNextLoadedSound(channel, signal) {
-      while (running && !signal.aborted) {
-        fillLookahead(channel, signal);
-        if (!channel.lookahead.length) throw abortError();
+    function soundPackResponseHasExpectedSize(response) {
+      const encoding = response.headers.get("Content-Encoding");
+      if (encoding && encoding.toLowerCase() !== "identity") return true;
+      const header = response.headers.get("Content-Length");
+      if (header === null) return true;
+      return Number(header) === SOUND_PACK_SIZE;
+    }
 
-        // Use whichever candidate settles first. A stalled oldest request must
-        // never hide a ready second candidate and silence the track.
-        const settled = await Promise.race(
-          channel.lookahead.map((entry) => entry.ready)
-        );
-        if (!running || signal.aborted) throw abortError();
-        const entryIndex = channel.lookahead.indexOf(settled.entry);
-        if (entryIndex === -1) continue;
-        channel.lookahead.splice(entryIndex, 1);
-        settled.entry.ready = null;
-
-        // Once this becomes the current candidate, immediately restore two
-        // future entries. Four tracks therefore use at most twelve sound loads.
-        fillLookahead(channel, signal);
-        const result = settled.result;
-        if (result.error) {
-          if (result.error.name === "AbortError") throw result.error;
-          reportUnreadableSound();
-          continue;
-        }
-        return result.sound;
+    async function getSoundPackDirectory(create) {
+      if (!navigator.storage?.getDirectory) return null;
+      try {
+        const root = await navigator.storage.getDirectory();
+        return await root.getDirectoryHandle(SOUND_PACK_DIRECTORY, { create });
+      } catch (error) {
+        if (create) warnCacheUnavailable(error);
+        return null;
       }
-      throw abortError();
+    }
+
+    async function getOpfsSoundPack() {
+      const directory = await getSoundPackDirectory(false);
+      if (!directory) return null;
+      try {
+        const handle = await directory.getFileHandle(SOUND_PACK_FILE_NAME);
+        const file = await handle.getFile();
+        if (file.size === SOUND_PACK_SIZE) return file;
+        await directory.removeEntry(SOUND_PACK_FILE_NAME);
+      } catch (error) {
+        if (error.name !== "NotFoundError") warnCacheUnavailable(error);
+      }
+      return null;
+    }
+
+    async function removeObsoleteOpfsPacks(directory) {
+      if (typeof directory.entries !== "function") return;
+      try {
+        for await (const [name, handle] of directory.entries()) {
+          if (handle.kind === "file"
+              && name.startsWith("sounds-")
+              && name.endsWith(".pack")
+              && name !== SOUND_PACK_FILE_NAME) {
+            await directory.removeEntry(name);
+          }
+        }
+      } catch {
+        // Old packs are harmless if this browser does not support enumeration.
+      }
+    }
+
+    function monitorSoundPackResponse(response) {
+      if (!response.body) return response;
+      const reader = response.body.getReader();
+      let loadedBytes = 0;
+      let readerReleased = false;
+      const releaseReader = () => {
+        if (readerReleased) return;
+        readerReleased = true;
+        try { reader.releaseLock(); } catch {}
+      };
+      const body = new ReadableStream({
+        async pull(controller) {
+          try {
+            const result = await reader.read();
+            if (result.done) {
+              if (loadedBytes !== SOUND_PACK_SIZE) {
+                controller.error(new Error(
+                  `Sound pack ended at ${loadedBytes} bytes; expected ${SOUND_PACK_SIZE}.`
+                ));
+              } else {
+                controller.close();
+              }
+              releaseReader();
+              return;
+            }
+            loadedBytes += result.value.byteLength;
+            if (loadedBytes > SOUND_PACK_SIZE) {
+              await reader.cancel("Sound pack exceeded its expected size.");
+              releaseReader();
+              controller.error(new Error("Sound pack exceeded its expected size."));
+              return;
+            }
+            setSoundPackProgress(loadedBytes);
+            controller.enqueue(result.value);
+          } catch (error) {
+            releaseReader();
+            controller.error(error);
+          }
+        },
+        async cancel(reason) {
+          try { await reader.cancel(reason); } finally { releaseReader(); }
+        }
+      });
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers
+      });
+    }
+
+    async function writeSoundPackToOpfs(response, directory, signal) {
+      let writable = null;
+      try {
+        const handle = await directory.getFileHandle(SOUND_PACK_FILE_NAME, { create: true });
+        writable = await handle.createWritable();
+        if (response.body) {
+          const monitored = monitorSoundPackResponse(response);
+          await monitored.body.pipeTo(writable, { signal });
+          writable = null;
+        } else {
+          const bytes = await waitForAbortable(response.arrayBuffer(), signal);
+          if (bytes.byteLength !== SOUND_PACK_SIZE) {
+            throw new Error("Sound pack had an unexpected size.");
+          }
+          await waitForAbortable(writable.write(bytes), signal);
+          await waitForAbortable(writable.close(), signal);
+          writable = null;
+          setSoundPackProgress(bytes.byteLength);
+        }
+
+        const file = await handle.getFile();
+        if (file.size !== SOUND_PACK_SIZE) {
+          throw new Error(`Sound pack size was ${file.size}; expected ${SOUND_PACK_SIZE}.`);
+        }
+        await removeObsoleteOpfsPacks(directory);
+        return;
+      } catch (error) {
+        if (writable) {
+          try { await writable.abort(); } catch {}
+        }
+        try { await directory.removeEntry(SOUND_PACK_FILE_NAME); } catch {}
+        if (signal.aborted) throw abortError();
+        throw error;
+      }
+    }
+
+    async function getCachedSoundPackResponse() {
+      const cache = await openSoundCache();
+      if (!cache) return null;
+      try {
+        const response = await cache.match(SOUND_PACK_URL);
+        if (!response) return null;
+        if (soundPackResponseHasExpectedSize(response)) return response;
+        await cache.delete(SOUND_PACK_URL);
+      } catch (error) {
+        warnCacheUnavailable(error);
+      }
+      return null;
+    }
+
+    async function fetchSoundPack(signal) {
+      const response = await fetch(SOUND_PACK_URL, {
+        signal,
+        cache: "reload",
+        headers: { "X-MFX-Pack": "1" }
+      });
+      if (!response.ok) {
+        throw new Error(`Sound-pack request failed with status ${response.status}.`);
+      }
+      if (!soundPackResponseHasExpectedSize(response)) {
+        throw new Error("Sound-pack response had an unexpected size.");
+      }
+      return response;
+    }
+
+    async function writeSoundPackToCache(response, cache, signal) {
+      const monitored = monitorSoundPackResponse(response);
+      await cache.put(SOUND_PACK_URL, monitored);
+      if (signal.aborted) throw abortError();
+      const stored = await cache.match(SOUND_PACK_URL);
+      if (!stored || !soundPackResponseHasExpectedSize(stored)) {
+        try { await cache.delete(SOUND_PACK_URL); } catch {}
+        throw new Error("The cached sound pack could not be verified.");
+      }
+    }
+
+    async function storeSoundPack(signal) {
+      if (await getOpfsSoundPack()) {
+        setSoundPackProgress(SOUND_PACK_SIZE);
+        return;
+      }
+      if (await getCachedSoundPackResponse()) {
+        setSoundPackProgress(SOUND_PACK_SIZE);
+        return;
+      }
+
+      let directory = await getSoundPackDirectory(true);
+      const cache = await openSoundCache();
+      if (!directory && !cache) {
+        throw new Error("Persistent sound storage is unavailable.");
+      }
+
+      let lastError = null;
+      for (let attempt = 0; attempt <= SOUND_PACK_RETRY_LIMIT; attempt += 1) {
+        try {
+          setSoundPackProgress(0);
+          const response = await fetchSoundPack(signal);
+          if (directory) {
+            try {
+              await writeSoundPackToOpfs(response, directory, signal);
+              if (cache) {
+                try { await cache.delete(SOUND_PACK_URL); } catch {}
+              }
+              return;
+            } catch (error) {
+              if (signal.aborted || error.name === "AbortError") throw abortError();
+              if (cache) {
+                directory = null;
+                logWarning("OPFS sound storage failed; using Cache Storage");
+              }
+              throw error;
+            }
+          }
+
+          await writeSoundPackToCache(response, cache, signal);
+          return;
+        } catch (error) {
+          if (signal.aborted || error.name === "AbortError") throw abortError();
+          lastError = error;
+          if (attempt < SOUND_PACK_RETRY_LIMIT) {
+            logWarning(`Sound-pack load failed; retry ${attempt + 1} of ${SOUND_PACK_RETRY_LIMIT}`);
+          }
+        }
+      }
+      throw lastError || new Error("Sound-pack loading failed.");
+    }
+
+    function preloadSoundPack() {
+      if (soundPackPreloadPromise) return soundPackPreloadPromise;
+      const controller = new AbortController();
+      soundPackPreloadController = controller;
+      logInfo(`Preloading ${Math.round(SOUND_PACK_SIZE / 1048576)} MiB sound pack`);
+      let task = null;
+      task = storeSoundPack(controller.signal).then(
+        () => logInfo("Sound pack ready"),
+        (error) => {
+          if (error.name !== "AbortError") logWarning(`Sound-pack preload failed: ${error.message}`);
+          if (soundPackPreloadPromise === task) soundPackPreloadPromise = null;
+          throw error;
+        }
+      ).finally(() => {
+        if (soundPackPreloadController === controller) soundPackPreloadController = null;
+      });
+      soundPackPreloadPromise = task;
+      void task.catch(() => {});
+      return task;
+    }
+
+    async function getStoredSoundPackSource(signal) {
+      const opfsFile = await waitForAbortable(getOpfsSoundPack(), signal);
+      if (opfsFile) return opfsFile;
+
+      const response = await waitForAbortable(getCachedSoundPackResponse(), signal);
+      if (response) {
+        const blob = await waitForAbortable(response.blob(), signal);
+        if (blob.size === SOUND_PACK_SIZE) return blob;
+      }
+      return null;
+    }
+
+    async function acquireSoundPack(signal) {
+      if (soundPackFile) return soundPackFile;
+      if (soundPackPreloadPromise) {
+        try {
+          await waitForAbortable(soundPackPreloadPromise, signal);
+        } catch (error) {
+          if (signal.aborted) throw abortError();
+        }
+      }
+
+      let source = await getStoredSoundPackSource(signal);
+      if (!source) {
+        await storeSoundPack(signal);
+        source = await getStoredSoundPackSource(signal);
+      }
+      if (!source || source.size !== SOUND_PACK_SIZE) {
+        throw new Error("The complete sound pack is unavailable.");
+      }
+      soundPackFile = source;
+      return source;
+    }
+
+    function getSoundSlice(sound) {
+      const end = sound.o + sound.l;
+      if (!soundPackFile
+          || !Number.isSafeInteger(sound.o)
+          || !Number.isSafeInteger(sound.l)
+          || sound.o < 0
+          || sound.l <= 0
+          || end > soundPackFile.size) {
+        throw new Error("Sound-pack index entry is invalid.");
+      }
+      return soundPackFile.slice(sound.o, end, "audio/mpeg");
     }
 
     function yieldBeforePlaybackRetry(channel, signal) {
@@ -1142,7 +1323,7 @@
       resetNativeSource(channel, audio, mediaSource, channel.panner);
     }
 
-    function playNative(channel, url, playbackRate, delaySeconds, pan, panMoves) {
+    function playNative(channel, soundBlob, playbackRate, delaySeconds, pan, panMoves) {
       // Forward playback stays on the browser's native media pipeline, which can
       // use the operating system's accelerated decoder without allocating PCM in JS.
       return new Promise((resolve, reject) => {
@@ -1154,6 +1335,7 @@
         let sourceReleased = false;
         let settled = false;
         let cancel = null;
+        let objectUrl = null;
 
         const releaseSourceOnly = () => {
           if (sourceReleased) return;
@@ -1164,6 +1346,10 @@
             audio.removeEventListener("loadedmetadata", onMetadata);
           }
           resetNativeSource(channel, audio, mediaSource, panner);
+          if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = null;
+          }
         };
 
         const cleanup = () => {
@@ -1224,7 +1410,9 @@
           audio.addEventListener("ended", onEnded, { once: true });
           audio.addEventListener("error", onError, { once: true });
           audio.addEventListener("loadedmetadata", onMetadata, { once: true });
-          audio.src = url;
+          objectUrl = URL.createObjectURL(soundBlob);
+          soundBlob = null;
+          audio.src = objectUrl;
           Promise.resolve(audio.play()).catch(onError);
         } catch (error) {
           finish(error);
@@ -1234,7 +1422,7 @@
 
     async function playBuffered(
       channel,
-      url,
+      soundBlob,
       reversed,
       playbackRate,
       pitch,
@@ -1245,7 +1433,6 @@
       // Reverse and oscillator-pitch playback require a decoded source. Only this
       // clip is decoded, optionally reversed in place, then completely released.
       const controller = new AbortController();
-      let response = null;
       let encodedAudio = null;
       let decodedAudio = null;
       let source = null;
@@ -1263,23 +1450,9 @@
       };
 
       try {
-        if ("caches" in window) {
-          const cache = await caches.open(SOUND_CACHE_NAME);
-          response = await cache.match(url);
-        }
-
-        if (controller.signal.aborted) throw abortError();
-
-        if (!response) {
-          response = await fetch(url, { signal: controller.signal });
-        }
-
-        if (!response.ok) {
-          throw new Error(`Sound request failed with status ${response.status}.`);
-        }
-
-        encodedAudio = await response.arrayBuffer();
-        response = null;
+        const encodedAudioTask = soundBlob.arrayBuffer();
+        soundBlob = null;
+        encodedAudio = await waitForAbortable(encodedAudioTask, controller.signal);
         if (controller.signal.aborted) throw abortError();
         const decodeTask = decodeAudioLimited(encodedAudio, controller.signal);
         encodedAudio = null;
@@ -1389,15 +1562,16 @@
         source = null;
         decodedAudio = null;
         encodedAudio = null;
-        response = null;
+        soundBlob = null;
       }
     }
 
     async function runChannel(channel, signal) {
       while (running && !signal.aborted) {
-        let sound;
+        const sound = chooseSound();
+        let soundBlob = null;
         try {
-          sound = await takeNextLoadedSound(channel, signal);
+          soundBlob = getSoundSlice(sound);
         } catch (error) {
           if (!running || error.name === "AbortError") break;
           reportUnreadableSound();
@@ -1415,10 +1589,11 @@
         const panMoves = Math.random() < PAN_MOTION_CHANCE;
 
         try {
+          let playbackTask = null;
           if (reversed || pitch) {
-            await playBuffered(
+            playbackTask = playBuffered(
               channel,
-              sound.url,
+              soundBlob,
               reversed,
               playbackRate,
               pitch,
@@ -1427,15 +1602,17 @@
               panMoves
             );
           } else {
-            await playNative(
+            playbackTask = playNative(
               channel,
-              sound.url,
+              soundBlob,
               playbackRate,
               delaySeconds,
               pan,
               panMoves
             );
           }
+          soundBlob = null;
+          await playbackTask;
         } catch (error) {
           if (error.name === "DecodeTimeoutError") {
             if (running) void stopAfterDecodeTimeout(error);
@@ -1443,13 +1620,14 @@
           }
           if (!running || error.name === "AbortError") break;
           reportUnreadableSound();
-          void evictCachedSound(sound.url);
           try {
             await yieldBeforePlaybackRetry(channel, signal);
           } catch (retryError) {
             if (!running || retryError.name === "AbortError") break;
             throw retryError;
           }
+        } finally {
+          soundBlob = null;
         }
       }
     }
@@ -1463,7 +1641,6 @@
     }
 
     function releaseChannel(channel) {
-      channel.lookahead.length = 0;
       if (channel.cancel) {
         channel.cancel();
         return;
@@ -1503,7 +1680,7 @@
     }
 
     function resetInterface() {
-      goButton.disabled = false;
+      goButton.disabled = !loadingComplete;
       goButton.textContent = "GO!";
       goButton.dataset.state = "idle";
     }
@@ -1542,18 +1719,14 @@
         // Do not permit a fresh session to reuse channel state until every old
         // async load/decode has reached its finally block and dropped references.
         await Promise.allSettled(
-          [
-            ...channels.map((channel) => channel.task).filter(Boolean),
-            ...pendingLoads
-          ]
+          channels.map((channel) => channel.task).filter(Boolean)
         );
         channels.forEach((channel) => {
           channel.task = null;
-          channel.lookahead.length = 0;
           releaseNativePool(channel);
         });
         playbackController = null;
-        requestQueue.length = 0;
+        soundPackFile = null;
         await releaseScreenWakeLock();
 
         if (!(await settleWithin(contextClosePromise, AUDIO_CONTEXT_CLOSE_TIMEOUT_MS))) {
@@ -1599,6 +1772,9 @@
       running = true;
 
       try {
+        await acquireSoundPack(controller.signal);
+        if (controller.signal.aborted || !running) throw abortError();
+
         const context = new AudioContextClass({ latencyHint: "playback" });
         audioContext = context;
         if (typeof context.createStereoPanner !== "function") {
@@ -1648,21 +1824,56 @@
       logInfo("Playback stopped");
     }
 
+    function prepareApplicationCache() {
+      if (applicationCachePromise) return applicationCachePromise;
+      let task = null;
+      task = initializeApplicationCache().catch((error) => {
+        if (applicationCachePromise === task) applicationCachePromise = null;
+        throw error;
+      });
+      applicationCachePromise = task;
+      return task;
+    }
+
+    async function initializeOfflineApplication() {
+      if (loadingComplete) return;
+      try {
+        await Promise.all([prepareApplicationCache(), preloadSoundPack()]);
+        if (navigator.storage?.persist) {
+          try { await navigator.storage.persist(); } catch {}
+        }
+        finishLoadingScreen();
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          logError("Offline loading did not complete; waiting to retry.", error);
+        }
+      }
+    }
+
     goButton.addEventListener("click", () => {
       if (running) void stop();
       else void start();
     });
     ignoreMediaButtons();
-    void initializeApplicationCache();
+    void initializeOfflineApplication();
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "visible") return;
       resumePlaybackContext();
       void requestScreenWakeLock();
     });
     window.addEventListener("focus", resumePlaybackContext);
-    window.addEventListener("pagehide", shutdown);
+    window.addEventListener("online", () => {
+      if (!loadingComplete) void initializeOfflineApplication();
+    });
+    window.addEventListener("pagehide", () => {
+      if (soundPackPreloadController) soundPackPreloadController.abort();
+      void shutdown();
+    });
     window.addEventListener("pageshow", (event) => {
-      if (event.persisted) resetInterface();
+      if (event.persisted) {
+        resetInterface();
+        if (!loadingComplete) void initializeOfflineApplication();
+      }
     });
   </script>
 </body>

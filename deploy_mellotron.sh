@@ -38,7 +38,7 @@ for required in awk cp curl find mkdir mktemp mv sed sha256sum tr wc xargs; do
 done
 
 [[ -d "$SRC/snd" ]] || { echo "ERROR: missing $SRC/snd" >&2; exit 1; }
-for site_file in index.html sw.js manifest.webmanifest icon-192.png icon-512.png VERSION; do
+for site_file in index.html sw.js manifest.webmanifest icon-192.png icon-512.png sounds.pack VERSION; do
   [[ -f "$SRC/$site_file" ]] || { echo "ERROR: missing $SRC/$site_file" >&2; exit 1; }
 done
 if [[ "$MODE" == "deploy" ]]; then
@@ -46,7 +46,8 @@ if [[ "$MODE" == "deploy" ]]; then
 fi
 
 # A changed sound requires regenerating index.html and sw.js before deployment.
-if [[ -n "$(find "$SRC/snd" -type f -newer "$SRC/index.html" -print -quit)" \
+if [[ -n "$(find "$SRC/snd" -type f -newer "$SRC/sounds.pack" -print -quit)" \
+      || -n "$(find "$SRC/snd" -type f -newer "$SRC/index.html" -print -quit)" \
       || -n "$(find "$SRC/snd" -type f -newer "$SRC/sw.js" -print -quit)" ]]; then
   echo "ERROR: sound files are newer than index.html or sw.js; rebuild before deploying." >&2
   exit 1
@@ -74,8 +75,7 @@ trap 'rm -rf -- "$TMP_DIR"' EXIT
 cd "$SRC"
 : > "$FAILURES"
 {
-  printf 'index.html\0sw.js\0manifest.webmanifest\0icon-192.png\0icon-512.png\0'
-  find snd -type f -print0
+  printf 'index.html\0sw.js\0manifest.webmanifest\0icon-192.png\0icon-512.png\0sounds.pack\0'
 } > "$ALL_FILES"
 
 : > "$CURRENT_MANIFEST"
@@ -135,8 +135,7 @@ upload_one() {
 export BASE NETRC FAILURES
 export -f encode_url_path upload_one
 
-sound_count="$(find snd -type f | wc -l | tr -d '[:space:]')"
-total=$((sound_count + 5))
+total=6
 if [[ -f "$STATE_MANIFEST" ]]; then
   echo "Uploading $changed_count modified file(s) out of $total to ${BASE}/ with $PARALLEL_UPLOADS connections..."
 else
@@ -179,10 +178,21 @@ verify_url() {
   [[ "${result%% *}" == "200" ]]
 }
 
+verify_head_url() {
+  local url="$1"
+  local label="$2"
+  local result
+  result="$(curl -sS -m 30 -I -o /dev/null \
+    -w '%{http_code} %{content_type}' "$url")"
+  echo "$label -> HTTP $result"
+  [[ "${result%% *}" == "200" ]]
+}
+
 echo "Verifying public deployment..."
 verify_url "$LIVE" "/mfx/"
 verify_url "${LIVE}sw.js" "/mfx/sw.js"
 verify_url "${LIVE}manifest.webmanifest" "/mfx/manifest.webmanifest"
+verify_head_url "${LIVE}sounds.pack" "/mfx/sounds.pack"
 
 mkdir -p "$STATE_DIR"
 cp -- "$CURRENT_MANIFEST" "$STATE_MANIFEST.tmp"

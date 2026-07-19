@@ -7,11 +7,13 @@ $templatePath = Join-Path $projectRoot 'src\index.template.html'
 $serviceWorkerTemplatePath = Join-Path $projectRoot 'src\sw.template.js'
 $outputPath = Join-Path $projectRoot 'index.html'
 $serviceWorkerOutputPath = Join-Path $projectRoot 'sw.js'
+$soundPackPath = Join-Path $projectRoot 'sounds.pack'
+$soundPackTempPath = Join-Path $projectRoot 'sounds.pack.tmp'
 $manifestPath = Join-Path $projectRoot 'manifest.webmanifest'
 $icon192Path = Join-Path $projectRoot 'icon-192.png'
 $icon512Path = Join-Path $projectRoot 'icon-512.png'
 $appVersionPath = Join-Path $projectRoot 'VERSION'
-$supportedExtensions = @('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.opus', '.webm')
+$supportedExtensions = @('.mp3')
 
 if (-not (Test-Path -LiteralPath $soundDirectory -PathType Container)) {
   throw "Sound directory not found: $soundDirectory"
@@ -50,16 +52,57 @@ $files = @(
   $audioFiles |
     ForEach-Object { $_.FullName.Substring($soundRoot.Length + 1).Replace('\', '/') }
 )
-$manifest = ConvertTo-Json -InputObject $files -Compress
-
-$versionRecords = for ($index = 0; $index -lt $audioFiles.Count; $index += 1) {
-  "$($files[$index])|$($audioFiles[$index].Length)|$($audioFiles[$index].LastWriteTimeUtc.Ticks)"
+$soundRecords = [System.Collections.Generic.List[object]]::new($audioFiles.Count)
+$packStream = $null
+try {
+  $packStream = [System.IO.File]::Open(
+    $soundPackTempPath,
+    [System.IO.FileMode]::Create,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::None
+  )
+  $offset = [long]0
+  for ($index = 0; $index -lt $audioFiles.Count; $index += 1) {
+    $audioFile = $audioFiles[$index]
+    $length = [long]$audioFile.Length
+    $soundRecords.Add([ordered]@{
+      n = $files[$index]
+      o = $offset
+      l = $length
+    })
+    $inputStream = $null
+    try {
+      $inputStream = [System.IO.File]::OpenRead($audioFile.FullName)
+      $inputStream.CopyTo($packStream, 131072)
+    }
+    finally {
+      if ($null -ne $inputStream) { $inputStream.Dispose() }
+    }
+    $offset += $length
+  }
 }
-$versionSource = $versionRecords -join "`n"
-$versionBytes = [System.Text.Encoding]::UTF8.GetBytes($versionSource)
-$versionHash = [System.Security.Cryptography.SHA256]::HashData($versionBytes)
-$shortHash = ([System.Convert]::ToHexString($versionHash)).Substring(0, 12).ToLowerInvariant()
-$cacheName = "mfx-sounds-v2-$shortHash"
+finally {
+  if ($null -ne $packStream) { $packStream.Dispose() }
+}
+[System.IO.File]::Move($soundPackTempPath, $soundPackPath, $true)
+
+$packSize = [long](Get-Item -LiteralPath $soundPackPath).Length
+if ($packSize -ne $offset) {
+  throw "Generated sound pack size did not match its index."
+}
+$manifest = ConvertTo-Json -InputObject $soundRecords -Compress
+$packHashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+$packHashStream = $null
+try {
+  $packHashStream = [System.IO.File]::OpenRead($soundPackPath)
+  $packHash = $packHashAlgorithm.ComputeHash($packHashStream)
+}
+finally {
+  if ($null -ne $packHashStream) { $packHashStream.Dispose() }
+  $packHashAlgorithm.Dispose()
+}
+$shortHash = ([System.Convert]::ToHexString($packHash)).Substring(0, 12).ToLowerInvariant()
+$cacheName = "mfx-sound-pack-v1-$shortHash"
 
 $shellVersionRecords = @($shortHash, "app-version|$appVersion")
 foreach ($shellSource in @(
@@ -86,7 +129,10 @@ $output = $template.Replace('__SOUND_FILES__', $manifest).Replace(
   '__CACHE_NAME__',
   $cacheName
 ).Replace('__APP_VERSION__', $appVersion)
-$output = $output.Replace('__SHELL_CACHE_NAME__', $shellCacheName)
+$output = $output.Replace('__SHELL_CACHE_NAME__', $shellCacheName).Replace(
+  '__SOUND_PACK_VERSION__',
+  $shortHash
+).Replace('__SOUND_PACK_SIZE__', [string]$packSize)
 [System.IO.File]::WriteAllText(
   $outputPath,
   $output,
@@ -100,10 +146,14 @@ $serviceWorker = $serviceWorkerTemplate.Replace('__CACHE_NAME__', $cacheName).Re
   '__SHELL_CACHE_NAME__',
   $shellCacheName
 ).Replace('__APP_VERSION__', $appVersion)
+$serviceWorker = $serviceWorker.Replace(
+  '__SOUND_PACK_VERSION__',
+  $shortHash
+)
 [System.IO.File]::WriteAllText(
   $serviceWorkerOutputPath,
   $serviceWorker,
   [System.Text.UTF8Encoding]::new($false)
 )
 
-Write-Output "Generated Mellotron Sound Effects $appVersion with $($files.Count) sound files."
+Write-Output "Generated Mellotron Sound Effects $appVersion with $($files.Count) sounds in a $([math]::Round($packSize / 1MB, 2)) MiB pack."
