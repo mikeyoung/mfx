@@ -64,19 +64,36 @@
       will-change: transform;
     }
 
+    #loading-title {
+      position: absolute;
+      z-index: 1;
+      top: calc(clamp(3rem, 10vh, 7rem) + env(safe-area-inset-top, 0px));
+      left: 50%;
+      width: min(54rem, calc(100% - 2rem));
+      margin: 0;
+      transform: translateX(-50%);
+      color: #000;
+      text-align: center;
+      pointer-events: none;
+    }
+
     main {
       width: min(54rem, calc(100% - 2rem));
       padding: calc(clamp(3rem, 10vh, 7rem) + env(safe-area-inset-top, 0px)) 1rem clamp(2rem, 6vw, 5rem);
       text-align: center;
     }
 
-    h1 {
-      margin: 0 0 1.5rem;
+    h1,
+    #loading-title {
       font-size: clamp(1.5rem, 4vw, 2.25rem);
       font-weight: 700;
       letter-spacing: -0.03em;
       line-height: 1.05;
       text-wrap: balance;
+    }
+
+    h1 {
+      margin: 0 0 1.5rem;
     }
 
     #go {
@@ -164,7 +181,7 @@
     aria-valuemin="0"
     aria-valuemax="100"
     aria-valuenow="0"
-  ><div id="loading-progress"></div></div>
+  ><div id="loading-progress"></div><div id="loading-title" aria-hidden="true">preparing sounds</div></div>
   <main>
     <h1>Mellotron<br>Sound Effects</h1>
     <button id="go" type="button" disabled>GO!</button>
@@ -198,12 +215,12 @@
       "./icon-512.png"
     ];
     const PACK_PROGRESS_SHARE = 0.98;
-    const CHANNEL_COUNT = 4;
+    const CHANNEL_COUNT = 5;
     const MAX_CONCURRENT_DECODES = 1;
     const DECODE_TIMEOUT_MS = 15000;
     const AUDIO_CONTEXT_CLOSE_TIMEOUT_MS = 3000;
     const RECENT_SOUND_LIMIT = 12;
-    const OUTPUT_VOLUME = 0.25;
+    const OUTPUT_VOLUME = 0.2;
     const DELAY_FEEDBACK = 0.48;
     const DELAY_TAIL_THRESHOLD = 0.001;
     const PAN_MOTION_CHANCE = 0.5;

@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.10**, with `9` as the major version and `10` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.11**, with `9` as the major version and `11` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.10 must be 9.11.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.11 must be 9.12.
 
 ## Playback
 
@@ -22,13 +22,13 @@ Each new sound independently receives randomized processing:
 - 50% chance of a playback-rate shift between 0.5x and 2x
 - random stereo position, with optional animated panning
 - optional moderate oscillator-based pitch modulation
-- 25% per-track gain followed by a shared peak limiter
+- 20% per-track gain followed by a shared peak limiter
 
-On page load, a text-free full-screen loader shows the sound-pack transfer as a hard-edged, full-height white bar growing across a black background. The controls appear only after both the complete sound library and the PWA app shell have been durably stored for offline use. Playback advances only after the current sound and any delay trail have finished.
+On page load, a full-screen loader shows the sound-pack transfer as a hard-edged, full-height white bar growing across a black background. The black “preparing sounds” message is layered above the bar and appears as the white fill reaches it. The controls appear only after both the complete sound library and the PWA app shell have been durably stored for offline use. Playback advances only after the current sound and any delay trail have finished.
 
 ## Performance design
 
-- Playback is capped at four tracks.
+- Playback is capped at five tracks.
 - The 1,260 original MP3 byte streams are concatenated without recompression into one approximately 45 MiB `sounds.pack` file.
 - The generated page embeds a compact filename, byte-offset, and byte-length map. Each selected clip is recovered locally with `File.slice()`.
 - The pack is streamed into the browser's Origin Private File System when available, with Cache Storage as the feature-detected fallback.
