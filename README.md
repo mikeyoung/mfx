@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 Mellotron s
 
 ## Versioning
 
-The current release is **9.9**, with `9` as the major version and `9` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.10**, with `9` as the major version and `10` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.9 must be 9.10.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.10 must be 9.11.
 
 ## Playback
 
@@ -68,7 +68,7 @@ The indexed sound pack, manifest, and content-derived cache version are generate
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The build writes the ignored deployment artifact `sounds.pack` plus `index.html` and `sw.js`. Commit the generated page and worker together with source or sound-file changes; rebuild the pack before deployment.
+The build writes the tracked deployment artifact `sounds.pack` plus `index.html` and `sw.js`. Commit all three generated files when the local sound library changes; rebuild the pack before deployment.
 
 ## Deploy
 
@@ -93,8 +93,8 @@ manifest.webmanifest   PWA metadata
 icon-192.png           PWA and touch icon
 icon-512.png           Large and maskable PWA icon
 web.config             Site-local IIS MIME mapping for the sound pack
-snd/                   Audio library
-sounds.pack            Ignored, generated indexed audio pack
+snd/                   Local, untracked audio source library
+sounds.pack            Tracked, generated indexed audio pack
 src/                   Source templates
 build.ps1              Pack, manifest, and cache-version generator
 VERSION                Current major.minor application version
