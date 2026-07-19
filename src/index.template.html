@@ -33,7 +33,7 @@
       min-height: 100vh;
       margin: 0;
       display: grid;
-      place-items: center;
+      place-items: start center;
       overflow-x: hidden;
       background: #000;
     }
@@ -66,7 +66,7 @@
 
     main {
       width: min(54rem, calc(100% - 2rem));
-      padding: clamp(2rem, 6vw, 5rem) 1rem;
+      padding: calc(clamp(3rem, 10vh, 7rem) + env(safe-area-inset-top, 0px)) 1rem clamp(2rem, 6vw, 5rem);
       text-align: center;
     }
 
