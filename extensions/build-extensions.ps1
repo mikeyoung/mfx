@@ -79,7 +79,7 @@ function Assert-StoreManifest {
     throw "$PackageName manifest contains an unresolved build token."
   }
   $description = [string]$manifest.description
-  $expectedDescription = 'Creates an endless five-track stereo collage from a library of 1,260 sound effects.'
+  $expectedDescription = 'Creates an endless five-track stereo collage from a library of sound effects.'
   if ($description -ne $expectedDescription -or $description.Length -gt 132) {
     throw "$PackageName manifest does not contain the approved store description."
   }

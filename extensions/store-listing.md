@@ -6,7 +6,7 @@ Name: **Chaotic Sound Effects**
 
 Short summary:
 
-> Create an endless five-track stereo collage from a library of 1,260 sound effects.
+> Creates an endless five-track stereo collage from a library of sound effects.
 
 Full description:
 
@@ -84,7 +84,7 @@ Do not submit that statement with placeholders or before every assertion is supp
 
 Privacy policy field:
 
-> No privacy policy is required for the current package because it collects and transmits no data. If the dashboard still requires a URL, publish the repository's `PRIVACY.md` on the project website and use that public URL.
+> `https://mikeyoung.org/csfx/privacy.html`
 
 Firefox listing images:
 
