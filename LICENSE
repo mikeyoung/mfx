@@ -1,3 +1,15 @@
+Software license scope
+
+For this repository, the term "Software" in the MIT License below means only
+the software source code and original software documentation. It does not
+include audio recordings, sound samples, sound packs, images, icons, artwork,
+or any other media assets (collectively, the "Media").
+
+The Media is not licensed under the MIT License. No permission to copy,
+publish, distribute, sublicense, sell, or otherwise use the Media is granted
+by this LICENSE file. Any use or distribution of the Media requires separate
+authorization from the applicable rights holder. See MEDIA-NOTICE.md.
+
 MIT License
 
 Copyright (c) 2026 mikeyoung

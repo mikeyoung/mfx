@@ -18,6 +18,24 @@ $iconMask512Path = Join-Path $projectRoot 'icon-maskable-512.png'
 $appVersionPath = Join-Path $projectRoot 'VERSION'
 $supportedExtensions = @('.mp3')
 
+function ConvertTo-HexString {
+  param([Parameter(Mandatory)][byte[]]$Bytes)
+
+  return [System.BitConverter]::ToString($Bytes).Replace('-', '')
+}
+
+function Get-Sha256Hex {
+  param([Parameter(Mandatory)][byte[]]$Bytes)
+
+  $algorithm = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ConvertTo-HexString -Bytes ($algorithm.ComputeHash($Bytes))
+  }
+  finally {
+    $algorithm.Dispose()
+  }
+}
+
 if (-not (Test-Path -LiteralPath $soundDirectory -PathType Container)) {
   throw "Sound directory not found: $soundDirectory"
 }
@@ -87,7 +105,23 @@ try {
 finally {
   if ($null -ne $packStream) { $packStream.Dispose() }
 }
-[System.IO.File]::Move($soundPackTempPath, $soundPackPath, $true)
+if (Test-Path -LiteralPath $soundPackPath -PathType Leaf) {
+  # File.Replace is available in Windows PowerShell 5.1 and preserves the
+  # atomic same-volume replacement used by the PowerShell 7 Move overload.
+  $soundPackBackupPath = "$soundPackPath.previous"
+  if (Test-Path -LiteralPath $soundPackBackupPath) {
+    Remove-Item -LiteralPath $soundPackBackupPath -Force
+  }
+  [System.IO.File]::Replace(
+    $soundPackTempPath,
+    $soundPackPath,
+    $soundPackBackupPath
+  )
+  Remove-Item -LiteralPath $soundPackBackupPath -Force
+}
+else {
+  [System.IO.File]::Move($soundPackTempPath, $soundPackPath)
+}
 
 $packSize = [long](Get-Item -LiteralPath $soundPackPath).Length
 if ($packSize -ne $offset) {
@@ -104,7 +138,7 @@ finally {
   if ($null -ne $packHashStream) { $packHashStream.Dispose() }
   $packHashAlgorithm.Dispose()
 }
-$shortHash = ([System.Convert]::ToHexString($packHash)).Substring(0, 12).ToLowerInvariant()
+$shortHash = (ConvertTo-HexString -Bytes $packHash).Substring(0, 12).ToLowerInvariant()
 $cacheName = "mfx-sound-pack-v1-$shortHash"
 
 $shellVersionRecords = @($shortHash, "app-version|$appVersion")
@@ -114,15 +148,12 @@ foreach ($shellSource in @(
   $manifestPath
 ) + $iconPaths + @($appleTouchIconPath, $iconMask192Path, $iconMask512Path)) {
   $shellBytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $shellSource).Path)
-  $shellDigest = [System.Convert]::ToHexString(
-    [System.Security.Cryptography.SHA256]::HashData($shellBytes)
-  )
+  $shellDigest = Get-Sha256Hex -Bytes $shellBytes
   $shellVersionRecords += "$(Split-Path -Leaf $shellSource)|$shellDigest"
 }
 $shellVersionSource = $shellVersionRecords -join "`n"
 $shellVersionBytes = [System.Text.Encoding]::UTF8.GetBytes($shellVersionSource)
-$shellVersionHash = [System.Security.Cryptography.SHA256]::HashData($shellVersionBytes)
-$shellShortHash = ([System.Convert]::ToHexString($shellVersionHash)).Substring(0, 12).ToLowerInvariant()
+$shellShortHash = (Get-Sha256Hex -Bytes $shellVersionBytes).Substring(0, 12).ToLowerInvariant()
 $shellCacheName = "mfx-shell-$shellShortHash"
 
 $template = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $templatePath).Path)
@@ -157,4 +188,4 @@ $serviceWorker = $serviceWorker.Replace(
   [System.Text.UTF8Encoding]::new($false)
 )
 
-Write-Output "Generated Mellotron Sound Effects $appVersion with $($files.Count) sounds in a $([math]::Round($packSize / 1MB, 2)) MiB pack."
+Write-Output "Generated Chaotic Sound Effects $appVersion with $($files.Count) sounds in a $([math]::Round($packSize / 1MB, 2)) MiB pack."

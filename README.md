@@ -1,18 +1,18 @@
-# Mellotron Sound Effects
+# Chaotic Sound Effects
 
-A minimal, endless browser sound-collage instrument built from 1,260 Mellotron sound-effects samples.
+A minimal, endless browser sound-collage instrument built from 1,260 sound-effect samples.
 
 **Live site:** [mikeyoung.org/mfx](https://mikeyoung.org/mfx/)
 
 ## Versioning
 
-The current release is **9.12**, with `9` as the major version and `12` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.14**, with `9` as the major version and `14` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.12 must be 9.13.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.14 must be 9.15.
 
 ## Playback
 
-Press **GO!** to start four independent tracks. Press **STOP** to release every active audio resource and reset the session.
+Press **GO!** to start five independent tracks. Press **STOP** to release every active audio resource and reset the session.
 
 Each new sound independently receives randomized processing:
 
@@ -50,6 +50,10 @@ The loading takeover is dismissed only after the current app shell and complete 
 
 App-shell updates use the service worker's atomic install/activate lifecycle: the previous offline shell remains intact until the replacement is complete. Navigations use the network first with an offline cache fallback. Sound-pack cache keys are derived from audio content rather than the application version, so a code-only update does not redownload the library.
 
+## Browser extensions
+
+Submission packages for Firefox Add-ons and the Chrome Web Store are generated from the same application in `extensions/`. Each browser-specific ZIP bundles the complete sound pack, uses Manifest V3, requests no permissions or host access, and runs fully offline. The packages include both the software license and the separate media notice. See `extensions/README.md` for build and local-install instructions and `extensions/store-listing.md` for prepared submission content.
+
 ## Run locally
 
 The page must be served over HTTP so Web Audio, fetch, and the service worker can operate correctly.
@@ -72,17 +76,17 @@ The build writes the tracked deployment artifact `sounds.pack` plus `index.html`
 
 ## Deploy
 
-`deploy_mellotron.sh` uploads the generated page, worker, PWA manifest, icons, IIS MIME configuration, and single `sounds.pack` file to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
+`deploy_chaotic_sound_effects.sh` uploads the generated page, worker, PWA manifest, icons, IIS MIME configuration, and single `sounds.pack` file to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
 
 ```bash
-bash "M:/backup/webdev/chaotic sound effects/deploy_mellotron.sh"
+bash "M:/backup/webdev/chaotic sound effects/deploy_chaotic_sound_effects.sh"
 ```
 
 The deployment script is non-destructive: it neither lists nor deletes remote files. Authentication is handled directly by curl through a local `.netrc` file; credentials are not stored in this repository.
 
 Successful deployments record SHA-256 hashes in the ignored `.deploy-state/` directory. Later deployments upload only files whose contents changed. A fresh clone without deployment state performs one complete upload before incremental deployment begins.
 
-Run `deploy_mellotron.sh --plan` to calculate the incremental upload count without accessing FTP or changing deployment state.
+Run `deploy_chaotic_sound_effects.sh --plan` to calculate the incremental upload count without accessing FTP or changing deployment state.
 
 ## Project layout
 
@@ -98,9 +102,13 @@ sounds.pack            Tracked, generated indexed audio pack
 src/                   Source templates
 build.ps1              Pack, manifest, and cache-version generator
 VERSION                Current major.minor application version
-deploy_mellotron.sh    Guarded FTPS deployment
+deploy_chaotic_sound_effects.sh
+                       Guarded FTPS deployment
+extensions/             Chrome and Firefox extension manifests, packaging, and store content
+PRIVACY.md              Data handling statement for extension-store review
+MEDIA-NOTICE.md         Media exclusion and separate-authorization notice
 ```
 
 ## License
 
-[MIT](LICENSE)
+The software source code and original software documentation are available under the [MIT License](LICENSE). Audio recordings, sound samples, sound packs, images, icons, artwork, and other media are expressly excluded from that license and require separate authorization. See [MEDIA-NOTICE.md](MEDIA-NOTICE.md).

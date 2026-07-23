@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Mellotron Sound Effects",
-  "short_name": "Mellotron FX",
-  "description": "An endless four-track randomized Mellotron sound-effects instrument.",
+  "name": "Chaotic Sound Effects",
+  "short_name": "Chaotic SFX",
+  "description": "An endless five-track randomized sound-effects instrument.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

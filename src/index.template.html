@@ -32,7 +32,7 @@
   <link rel="icon" href="./icon-maskable-192.png?v=__APP_VERSION__" sizes="192x192" type="image/png">
   <link rel="icon" href="./icon-maskable-512.png?v=__APP_VERSION__" sizes="512x512" type="image/png">
   <link rel="apple-touch-icon" href="./apple-touch-icon.png?v=__APP_VERSION__">
-  <title>Mellotron Sound Effects</title>
+  <title>Chaotic Sound Effects</title>
   <style>
     :root {
       color-scheme: dark;
@@ -207,7 +207,7 @@
     aria-valuenow="0"
   ><div id="loading-progress"></div><div id="loading-title" aria-hidden="true">preparing sounds</div></div>
   <main>
-    <h1>Mellotron<br>Sound Effects</h1>
+    <h1>Chaotic<br>Sound Effects</h1>
     <button id="go" type="button" disabled>GO!</button>
     <p class="offline-note">This is a <a href="https://adeocode.com/blog/how-to-install-a-pwa-on-iphone-android-desktop" target="_blank" rel="noopener noreferrer">progressive web app</a> and can be used offline. It runs best when installed locally.</p>
   </main>
@@ -231,6 +231,8 @@
     const SOUND_PACK_FILE_NAME = `sounds-${SOUND_PACK_VERSION}.pack`;
     const SOUND_PACK_RETRY_LIMIT = 3;
     const SOUND_PACK_DIRECTORY = "mfx-sound-packs";
+    const EXTENSION_RUNTIME = location.protocol === "chrome-extension:"
+      || location.protocol === "moz-extension:";
     const SHELL_ASSET_PATHS = [
       "./",
       "./index.html",
@@ -310,16 +312,16 @@
     let loadingComplete = false;
 
     function logInfo(message) {
-      console.info(`[Mellotron Sound Effects] ${message}`);
+      console.info(`[Chaotic Sound Effects] ${message}`);
     }
 
     function logWarning(message) {
-      console.warn(`[Mellotron Sound Effects] ${message}`);
+      console.warn(`[Chaotic Sound Effects] ${message}`);
     }
 
     function logError(message, error = null) {
-      if (error) console.error(`[Mellotron Sound Effects] ${message}`, error);
-      else console.error(`[Mellotron Sound Effects] ${message}`);
+      if (error) console.error(`[Chaotic Sound Effects] ${message}`, error);
+      else console.error(`[Chaotic Sound Effects] ${message}`);
     }
 
     function setLoadingProgress(fraction) {
@@ -415,6 +417,13 @@
         localStorage.setItem(VERSION_STORAGE_KEY, APP_VERSION);
       } catch {
         // Storage can be disabled; service-worker versioning still remains active.
+      }
+
+      // The Chrome/Firefox package is itself the durable offline shell. Extension
+      // pages cannot register an ordinary web service worker, and do not need one.
+      if (EXTENSION_RUNTIME) {
+        logInfo("Packaged extension shell ready");
+        return;
       }
 
       const registration = await registerServiceWorker();
@@ -799,11 +808,14 @@
     }
 
     async function fetchSoundPack(signal) {
-      const response = await fetch(SOUND_PACK_URL, {
+      const requestOptions = {
         signal,
-        cache: "reload",
-        headers: { "X-MFX-Pack": "1" }
-      });
+        cache: "reload"
+      };
+      if (!EXTENSION_RUNTIME) {
+        requestOptions.headers = { "X-MFX-Pack": "1" };
+      }
+      const response = await fetch(SOUND_PACK_URL, requestOptions);
       if (!response.ok) {
         throw new Error(`Sound-pack request failed with status ${response.status}.`);
       }

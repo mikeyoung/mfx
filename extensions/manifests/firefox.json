@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Chaotic Sound Effects",
+  "short_name": "Chaotic SFX",
+  "version": "__APP_VERSION__",
+  "description": "Creates an endless five-track stereo collage from a library of 1,260 sound effects.",
+  "homepage_url": "https://mikeyoung.org/mfx/",
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "96": "icon-96.png",
+    "128": "icon-128.png"
+  },
+  "action": {
+    "default_title": "Open Chaotic Sound Effects",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png"
+    }
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "chaotic-sound-effects@mikeyoung.org",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
+}

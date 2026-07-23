@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy Mellotron Sound Effects to https://mikeyoung.org/mfx/ over explicit FTPS.
+# Deploy Chaotic Sound Effects to https://mikeyoung.org/mfx/ over explicit FTPS.
 #
 # This script is intentionally non-destructive: it uploads the current site but
 # never lists or deletes remote files. Authentication is handled only by curl

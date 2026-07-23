@@ -4,3 +4,5 @@ Desktop.ini
 .deploy-state/
 snd/
 sounds.pack.tmp
+extensions/dist/
+extensions/artifacts/
