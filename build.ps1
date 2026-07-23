@@ -139,7 +139,7 @@ finally {
   $packHashAlgorithm.Dispose()
 }
 $shortHash = (ConvertTo-HexString -Bytes $packHash).Substring(0, 12).ToLowerInvariant()
-$cacheName = "mfx-sound-pack-v1-$shortHash"
+$cacheName = "csfx-sound-pack-v1-$shortHash"
 
 $shellVersionRecords = @($shortHash, "app-version|$appVersion")
 foreach ($shellSource in @(
@@ -154,7 +154,7 @@ foreach ($shellSource in @(
 $shellVersionSource = $shellVersionRecords -join "`n"
 $shellVersionBytes = [System.Text.Encoding]::UTF8.GetBytes($shellVersionSource)
 $shellShortHash = (Get-Sha256Hex -Bytes $shellVersionBytes).Substring(0, 12).ToLowerInvariant()
-$shellCacheName = "mfx-shell-$shellShortHash"
+$shellCacheName = "csfx-shell-$shellShortHash"
 
 $template = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $templatePath).Path)
 $output = $template.Replace('__SOUND_FILES__', $manifest).Replace(

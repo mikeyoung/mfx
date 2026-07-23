@@ -4,7 +4,7 @@
   "short_name": "Chaotic SFX",
   "version": "__APP_VERSION__",
   "description": "Creates an endless five-track stereo collage from a library of 1,260 sound effects.",
-  "homepage_url": "https://mikeyoung.org/mfx/",
+  "homepage_url": "https://mikeyoung.org/csfx/",
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",

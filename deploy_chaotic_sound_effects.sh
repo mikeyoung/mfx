@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy Chaotic Sound Effects to https://mikeyoung.org/mfx/ over explicit FTPS.
+# Deploy Chaotic Sound Effects to https://mikeyoung.org/csfx/ over explicit FTPS.
 #
 # This script is intentionally non-destructive: it uploads the current site but
 # never lists or deletes remote files. Authentication is handled only by curl
@@ -11,7 +11,7 @@ export PATH
 
 readonly SRC="M:/backup/webdev/chaotic sound effects"
 readonly HOST="p1438.use1.mysecurecloudhost.com"
-readonly REMOTE_DIR="/mfx"
+readonly REMOTE_DIR="/csfx"
 readonly BASE="ftp://${HOST}${REMOTE_DIR}"
 readonly LIVE="https://mikeyoung.org${REMOTE_DIR}/"
 readonly NETRC="C:/Users/mikey/.netrc"
@@ -25,7 +25,7 @@ if [[ "$MODE" != "deploy" && "$MODE" != "--plan" ]]; then
   exit 2
 fi
 
-if [[ "$REMOTE_DIR" != "/mfx" || "$BASE" != "ftp://${HOST}/mfx" ]]; then
+if [[ "$REMOTE_DIR" != "/csfx" || "$BASE" != "ftp://${HOST}/csfx" ]]; then
   echo "ERROR: remote safety check failed; refusing to deploy." >&2
   exit 1
 fi
@@ -189,10 +189,10 @@ verify_head_url() {
 }
 
 echo "Verifying public deployment..."
-verify_url "$LIVE" "/mfx/"
-verify_url "${LIVE}sw.js" "/mfx/sw.js"
-verify_url "${LIVE}manifest.webmanifest" "/mfx/manifest.webmanifest"
-verify_head_url "${LIVE}sounds.pack" "/mfx/sounds.pack"
+verify_url "$LIVE" "/csfx/"
+verify_url "${LIVE}sw.js" "/csfx/sw.js"
+verify_url "${LIVE}manifest.webmanifest" "/csfx/manifest.webmanifest"
+verify_head_url "${LIVE}sounds.pack" "/csfx/sounds.pack"
 
 mkdir -p "$STATE_DIR"
 cp -- "$CURRENT_MANIFEST" "$STATE_MANIFEST.tmp"

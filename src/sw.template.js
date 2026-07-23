@@ -3,9 +3,9 @@
 const APP_VERSION = "__APP_VERSION__";
 const SOUND_CACHE_NAME = "__CACHE_NAME__";
 const SHELL_CACHE_NAME = "__SHELL_CACHE_NAME__";
-const SOUND_CACHE_PREFIX = "mfx-sound-pack-v1-";
-const SHELL_CACHE_PREFIX = "mfx-shell-";
-const LEGACY_SOUND_CACHE_PREFIXES = ["mfx-sounds-v2-", "chaotic-sound-effects-"];
+const SOUND_CACHE_PREFIX = "csfx-sound-pack-v1-";
+const SHELL_CACHE_PREFIX = "csfx-shell-";
+const LEGACY_SOUND_CACHE_PREFIXES = ["chaotic-sound-effects-"];
 const MAX_CONCURRENT_REQUESTS = 13;
 const SHELL_ASSETS = [
   "./",

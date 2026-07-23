@@ -2,13 +2,13 @@
 
 A minimal, endless browser sound-collage instrument built from 1,260 sound-effect samples.
 
-**Live site:** [mikeyoung.org/mfx](https://mikeyoung.org/mfx/)
+**Live site:** [mikeyoung.org/csfx](https://mikeyoung.org/csfx/)
 
 ## Versioning
 
-The current release is **9.14**, with `9` as the major version and `14` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.15**, with `9` as the major version and `15` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.14 must be 9.15.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.15 must be 9.16.
 
 ## Playback
 
@@ -76,7 +76,7 @@ The build writes the tracked deployment artifact `sounds.pack` plus `index.html`
 
 ## Deploy
 
-`deploy_chaotic_sound_effects.sh` uploads the generated page, worker, PWA manifest, icons, IIS MIME configuration, and single `sounds.pack` file to the isolated `/mfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
+`deploy_chaotic_sound_effects.sh` uploads the generated page, worker, PWA manifest, icons, IIS MIME configuration, and single `sounds.pack` file to the isolated `/csfx` FTPS directory, retries failures, and verifies the public HTTPS endpoints. Individual files under `snd/` are no longer uploaded.
 
 ```bash
 bash "M:/backup/webdev/chaotic sound effects/deploy_chaotic_sound_effects.sh"

@@ -14,7 +14,7 @@ Full description:
 >
 > Playback starts only after you press GO! and stops when you press STOP. The complete sound library is included with the extension and remains available offline. No account, subscription, analytics, advertising, or network access is required.
 
-Homepage: `https://mikeyoung.org/mfx/`
+Homepage: `https://mikeyoung.org/csfx/`
 
 Support URL: `https://github.com/mikeyoung/mfx/issues`
 

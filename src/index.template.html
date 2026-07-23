@@ -219,7 +219,7 @@
     // in a single content-versioned pack stored locally by the browser.
     const APP_VERSION = "__APP_VERSION__";
     const SHELL_CACHE_NAME = "__SHELL_CACHE_NAME__";
-    const VERSION_STORAGE_KEY = "mfx-version";
+    const VERSION_STORAGE_KEY = "csfx-version";
     const SOUND_FILES = __SOUND_FILES__;
     const SOUND_CACHE_NAME = "__CACHE_NAME__";
     const SOUND_PACK_VERSION = "__SOUND_PACK_VERSION__";
@@ -230,7 +230,7 @@
     ).href;
     const SOUND_PACK_FILE_NAME = `sounds-${SOUND_PACK_VERSION}.pack`;
     const SOUND_PACK_RETRY_LIMIT = 3;
-    const SOUND_PACK_DIRECTORY = "mfx-sound-packs";
+    const SOUND_PACK_DIRECTORY = "csfx-sound-packs";
     const EXTENSION_RUNTIME = location.protocol === "chrome-extension:"
       || location.protocol === "moz-extension:";
     const SHELL_ASSET_PATHS = [
@@ -813,7 +813,7 @@
         cache: "reload"
       };
       if (!EXTENSION_RUNTIME) {
-        requestOptions.headers = { "X-MFX-Pack": "1" };
+        requestOptions.headers = { "X-CSFX-Pack": "1" };
       }
       const response = await fetch(SOUND_PACK_URL, requestOptions);
       if (!response.ok) {
