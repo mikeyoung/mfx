@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 sound-effec
 
 ## Versioning
 
-The current release is **9.15**, with `9` as the major version and `15` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9.16**, with `9` as the major version and `16` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.15 must be 9.16.
+Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.16 must be 9.17.
 
 ## Playback
 
