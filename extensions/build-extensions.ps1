@@ -37,6 +37,29 @@ function Reset-GeneratedDirectory {
   New-Item -ItemType Directory -Path $resolvedPath -Force | Out-Null
 }
 
+function Remove-PreviousStoreArchives {
+  param(
+    [Parameter(Mandatory)]
+    [ValidateSet('chrome', 'firefox')]
+    [string]$PackageName
+  )
+
+  $resolvedArtifactRoot = [System.IO.Path]::GetFullPath($artifactRoot).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+  )
+  $expectedPrefix = $resolvedArtifactRoot + [System.IO.Path]::DirectorySeparatorChar
+  $archivePattern = "chaotic-sound-effects-$PackageName-v*.zip"
+
+  foreach ($archive in Get-ChildItem -LiteralPath $resolvedArtifactRoot -Filter $archivePattern -File) {
+    $resolvedArchive = [System.IO.Path]::GetFullPath($archive.FullName)
+    if (-not $resolvedArchive.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to remove a store archive outside $resolvedArtifactRoot"
+    }
+    Remove-Item -LiteralPath $resolvedArchive -Force
+  }
+}
+
 function Copy-RequiredFile {
   param(
     [Parameter(Mandatory)][string]$Source,
@@ -119,9 +142,16 @@ function Assert-StoreManifest {
     if ([string]$gecko.id -ne 'chaotic-sound-effects@mikeyoung.org') {
       throw 'Firefox manifest has the wrong stable extension ID.'
     }
+    if ([string]$gecko.strict_min_version -ne '140.0') {
+      throw 'Firefox manifest must require Firefox 140 or newer for data collection permissions.'
+    }
     $requiredData = @($gecko.data_collection_permissions.required)
     if ($requiredData.Count -ne 1 -or $requiredData[0] -ne 'none') {
       throw 'Firefox manifest must declare that it requires no data collection.'
+    }
+    $geckoAndroid = $manifest.browser_specific_settings.gecko_android
+    if ([string]$geckoAndroid.strict_min_version -ne '142.0') {
+      throw 'Firefox manifest must require Firefox for Android 142 or newer for data collection permissions.'
     }
   }
 }
@@ -145,8 +175,8 @@ foreach ($requiredPath in @(
 }
 
 $appVersion = [System.IO.File]::ReadAllText($versionPath).Trim()
-if ($appVersion -notmatch '^\d+\.\d+$') {
-  throw 'VERSION must contain a major.minor number, such as 9.1.'
+if ($appVersion -notmatch '^9+$') {
+  throw 'VERSION must contain only one or more 9 digits, such as 9, 99, or 999.'
 }
 
 $page = [System.IO.File]::ReadAllText($appPagePath)
@@ -167,6 +197,9 @@ if ($styleMatches.Count -ne 1 -or $scriptMatches.Count -ne 1) {
 
 $appCss = $styleMatches[0].Groups['content'].Value.Trim() + "`n"
 $appJavaScript = $scriptMatches[0].Groups['content'].Value.Trim() + "`n"
+if ($appJavaScript -match '(?i)\.(?:innerHTML|outerHTML)\s*=|\.insertAdjacentHTML\s*\(') {
+  throw 'The generated extension script contains an unsafe dynamic HTML assignment.'
+}
 $extensionPage = $styleExpression.Replace(
   $page,
   '  <link rel="stylesheet" href="./app.css">',
@@ -267,9 +300,7 @@ foreach ($packageName in $packageNames) {
   }
 
   $archivePath = Join-Path $artifactRoot "chaotic-sound-effects-$packageName-v$appVersion.zip"
-  if (Test-Path -LiteralPath $archivePath) {
-    Remove-Item -LiteralPath $archivePath -Force
-  }
+  Remove-PreviousStoreArchives -PackageName $packageName
   Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $archivePath -CompressionLevel Optimal
 
   $archiveMiB = [math]::Round((Get-Item -LiteralPath $archivePath).Length / 1MB, 2)

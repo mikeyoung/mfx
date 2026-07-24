@@ -168,7 +168,7 @@
       background: #fff;
     }
 
-    .offline-note {
+    .bottom-copy {
       position: fixed;
       left: 50%;
       bottom: calc(clamp(1.25rem, 5vh, 3rem) + env(safe-area-inset-bottom, 0px));
@@ -180,11 +180,19 @@
       text-align: center;
     }
 
-    .offline-note a,
-    .offline-note a:visited,
-    .offline-note a:hover,
-    .offline-note a:focus,
-    .offline-note a:active {
+    .bottom-copy p {
+      margin: 0;
+    }
+
+    .bottom-copy p + p {
+      margin-top: 0.35rem;
+    }
+
+    .bottom-copy a,
+    .bottom-copy a:visited,
+    .bottom-copy a:hover,
+    .bottom-copy a:focus,
+    .bottom-copy a:active {
       color: #fff;
       text-decoration: underline;
       text-decoration-color: #fff;
@@ -209,7 +217,11 @@
   <main>
     <h1>Chaotic<br>Sound Effects</h1>
     <button id="go" type="button" disabled>GO!</button>
-    <p class="offline-note">This is a <a href="https://www.pcmag.com/explainers/how-to-use-progessive-web-apps" target="_blank" rel="noopener noreferrer">progressive web app</a> and can be used offline. It runs best when installed locally.</p>
+    <div class="bottom-copy">
+      <p class="offline-note">This is a <a href="https://www.pcmag.com/explainers/how-to-use-progessive-web-apps" target="_blank" rel="noopener noreferrer">progressive web app</a> and can be used offline. It runs best when installed locally.</p>
+      <p>Designed to play forever.</p>
+      <p class="store-links"><a href="https://addons.mozilla.org/en-US/firefox/addon/chaotic-sound-effects/" target="_blank" rel="noopener noreferrer">Firefox Add-On</a> / <a href="https://chromewebstore.google.com/detail/mgkfdggkjfeodfdejjodabcohefledcb?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">Chrome Extension</a></p>
+    </div>
   </main>
 
   <script>

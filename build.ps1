@@ -54,8 +54,8 @@ if (-not (Test-Path -LiteralPath $appVersionPath -PathType Leaf)) {
   throw "Version file not found: $appVersionPath"
 }
 $appVersion = [System.IO.File]::ReadAllText($appVersionPath).Trim()
-if ($appVersion -notmatch '^\d+\.\d+$') {
-  throw "VERSION must contain a major.minor number, such as 9.1."
+if ($appVersion -notmatch '^9+$') {
+  throw "VERSION must contain only one or more 9 digits, such as 9, 99, or 999."
 }
 
 $soundRoot = (Resolve-Path -LiteralPath $soundDirectory).Path.TrimEnd('\\')

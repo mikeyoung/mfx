@@ -6,9 +6,9 @@ A minimal, endless browser sound-collage instrument built from 1,260 sound-effec
 
 ## Versioning
 
-The current release is **9.17**, with `9` as the major version and `17` as the minor version. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9999**. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
-Every code commit must increment the minor version by one before rebuilding and committing. For example, the commit following 9.17 must be 9.18.
+Versions use a repeated-9 sequence. Version 1 is `9`, version 2 is `99`, version 3 is `999`, and every subsequent code commit appends one more `9` before rebuilding and committing.
 
 ## Playback
 
@@ -102,7 +102,7 @@ snd/                   Local, untracked audio source library
 sounds.pack            Tracked, generated indexed audio pack
 src/                   Source templates
 build.ps1              Pack, manifest, and cache-version generator
-VERSION                Current major.minor application version
+VERSION                Current repeated-9 application version
 deploy_chaotic_sound_effects.sh
                        Guarded FTPS deployment
 extensions/             Chrome and Firefox extension manifests, packaging, and store content
