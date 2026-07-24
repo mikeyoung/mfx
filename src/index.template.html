@@ -270,6 +270,7 @@
     const MAX_CONCURRENT_DECODES = 1;
     const DECODE_TIMEOUT_MS = 15000;
     const AUDIO_CONTEXT_CLOSE_TIMEOUT_MS = 3000;
+    const SERVICE_WORKER_ACTIVATION_TIMEOUT_MS = 15000;
     const RECENT_SOUND_LIMIT = 12;
     const OUTPUT_VOLUME = 0.33;
     const OUTPUT_CEILING = 0.98;
@@ -332,6 +333,7 @@
     let soundPackPreloadController = null;
     let applicationCachePromise = null;
     let loadingComplete = false;
+    let persistentStorageRequested = false;
 
     function logInfo(message) {
       console.info(`[Chaotic Sound Effects] ${message}`);
@@ -373,6 +375,7 @@
     function waitForWorkerActivation(worker) {
       if (!worker || worker.state === "activated") return Promise.resolve();
       return new Promise((resolve, reject) => {
+        let timeout = null;
         const onStateChange = () => {
           if (worker.state === "activated") finish();
           else if (worker.state === "redundant") {
@@ -380,11 +383,16 @@
           }
         };
         const finish = (error = null) => {
+          if (timeout !== null) window.clearTimeout(timeout);
+          timeout = null;
           worker.removeEventListener("statechange", onStateChange);
           if (error) reject(error);
           else resolve();
         };
         worker.addEventListener("statechange", onStateChange);
+        timeout = window.setTimeout(() => {
+          finish(new Error("Offline worker activation timed out."));
+        }, SERVICE_WORKER_ACTIVATION_TIMEOUT_MS);
         onStateChange();
       });
     }
@@ -413,23 +421,42 @@
       }
     }
 
+    async function offlineShellCanStart(registration) {
+      const workerCanServe = Boolean(
+        navigator.serviceWorker.controller
+        || registration.active?.state === "activated"
+      );
+      return workerCanServe && await offlineShellIsReady();
+    }
+
     async function ensureOfflineShell(registration) {
       if (!("caches" in window)) {
         throw new Error("Cache Storage is unavailable.");
       }
 
+      // An older active worker can safely keep serving while a replacement
+      // finishes in the background. Do not let that replacement block launch
+      // when this version's complete shell is already durable.
+      if (await offlineShellCanStart(registration)) return;
+
       let candidate = registration.installing || registration.waiting;
       if (candidate) await waitForWorkerActivation(candidate);
-      await navigator.serviceWorker.ready;
-      if (await offlineShellIsReady()) return;
+      if (await offlineShellCanStart(registration)) return;
 
       await registration.update();
       candidate = registration.installing || registration.waiting;
       if (candidate) await waitForWorkerActivation(candidate);
-      await navigator.serviceWorker.ready;
-      if (!(await offlineShellIsReady())) {
+      if (!(await offlineShellCanStart(registration))) {
         throw new Error("The complete offline app shell is unavailable.");
       }
+    }
+
+    function requestPersistentStorage() {
+      if (persistentStorageRequested || !navigator.storage?.persist) return;
+      persistentStorageRequested = true;
+      void Promise.resolve()
+        .then(() => navigator.storage.persist())
+        .catch(() => {});
     }
 
     async function initializeApplicationCache() {
@@ -1945,9 +1972,7 @@
         startSilentLooper(context);
         context.onstatechange = resumePlaybackContext;
         void requestScreenWakeLock();
-        if (navigator.storage?.persist) {
-          void navigator.storage.persist().catch(() => {});
-        }
+        requestPersistentStorage();
 
         channels.forEach((channel) => {
           channel.task = runChannel(channel, sessionController.signal);
@@ -1985,10 +2010,8 @@
       if (loadingComplete) return;
       try {
         await Promise.all([prepareApplicationCache(), preloadSoundPack()]);
-        if (navigator.storage?.persist) {
-          try { await navigator.storage.persist(); } catch {}
-        }
         finishLoadingScreen();
+        requestPersistentStorage();
       } catch (error) {
         if (error.name !== "AbortError") {
           logError("Offline loading did not complete; waiting to retry.", error);
