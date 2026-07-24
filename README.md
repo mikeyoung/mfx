@@ -36,8 +36,10 @@ On page load, a full-screen loader shows the sound-pack transfer as a hard-edged
 - A failed or interrupted pack transfer is removed and retried up to three times; incomplete packs are never accepted as ready.
 - The content-derived pack name remains unchanged across code releases, preventing code-version updates from downloading the sounds again.
 - Forward sounds without oscillator pitch use the browser's native media pipeline.
-- Reverse and pitch-modulated sounds use short-lived decoded Web Audio buffers.
-- Sources, buffers, timers, listeners, automation, and audio nodes are explicitly released after every sound.
+- Reverse and pitch-modulated sounds use short-lived decoded Web Audio buffers at the library's native 22.05 kHz sample rate.
+- Decode-only contexts rotate through at most two same-origin hidden realms. A replacement is warmed before use, and a retired realm is destroyed after its final decoded clip ends so Firefox cannot retain an unbounded history of decoded PCM.
+- Each track reuses one bounded stereo-panner and feedback-delay graph for its entire playback session instead of allocating those nodes per clip.
+- One-shot sources, decoded buffers, timers, listeners, automation, and pitch nodes are explicitly released after every sound; pooled track effects are disconnected on stop.
 - Only a small compressed slice and any active decoded clip are retained for playback; the complete pack remains disk-backed where OPFS is available.
 - A one-frame silent Web Audio loop and Screen Wake Lock provide best-effort continuous operation while playback is active. Browsers and operating systems may still suspend background pages.
 - Media-session buttons are explicitly ignored.
