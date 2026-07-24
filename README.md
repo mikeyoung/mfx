@@ -6,7 +6,7 @@ A minimal, endless browser sound-collage instrument built from 1,260 sound-effec
 
 ## Versioning
 
-The current release is **9999.999**. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **9999.9999**. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
 The project owner chooses the version number for every release and must be prompted whenever a version has not already been supplied. Versions must use a store-compatible format: one to four dot-separated integers from `0` through `65535`, without leading zeroes, and with at least one non-zero component.
 
@@ -22,7 +22,7 @@ Each new sound independently receives randomized processing:
 - 50% chance of a playback-rate shift between 0.5x and 2x
 - random stereo position, with optional animated panning
 - optional moderate oscillator-based pitch modulation
-- 20% per-track gain followed by a shared peak limiter
+- 33% per-track gain followed by one shared dynamic compressor and a final soft safety limiter
 
 On page load, a full-screen loader shows the sound-pack transfer as a hard-edged, full-height white bar growing across a black background. The large black “preparing sounds” message spans approximately 90% of the screen width above the bar and appears as the white fill reaches it. The controls appear only after both the complete sound library and the PWA app shell have been durably stored for offline use. Playback advances only after the current sound and any delay trail have finished.
 
