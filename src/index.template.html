@@ -267,11 +267,7 @@
     ];
     const PACK_PROGRESS_SHARE = 0.98;
     const CHANNEL_COUNT = 5;
-    const AUDIO_SAMPLE_RATE = 22050;
     const MAX_CONCURRENT_DECODES = 1;
-    const MAX_DECODE_REALMS = 2;
-    const DECODE_REALM_PREWARM_BYTES = 8 * 1024 * 1024;
-    const DECODE_REALM_PCM_LIMIT_BYTES = 12 * 1024 * 1024;
     const DECODE_TIMEOUT_MS = 15000;
     const AUDIO_CONTEXT_CLOSE_TIMEOUT_MS = 3000;
     const SERVICE_WORKER_ACTIVATION_TIMEOUT_MS = 15000;
@@ -282,7 +278,6 @@
     const SAFETY_LIMITER_CURVE_SIZE = 2049;
     const DELAY_FEEDBACK = 0.48;
     const DELAY_TAIL_THRESHOLD = 0.001;
-    const MAX_DELAY_SECONDS = 0.6;
     const PAN_MOTION_CHANCE = 0.5;
     const MAX_PAN_SWEEPS = 4;
     const PITCH_MODULATION_CHANCE = 0.5;
@@ -315,7 +310,6 @@
       };
     });
     const decodeQueue = [];
-    const decodeRealms = new Set();
 
     let running = false;
     let audioContext = null;
@@ -329,10 +323,6 @@
     let recentSoundIndex = 0;
     let activeDecodeCount = 0;
     let decodeGeneration = 0;
-    let activeDecodeRealm = null;
-    let standbyDecodeRealm = null;
-    let decodeRealmSerial = 0;
-    let decodeRealmWarningLogged = false;
     let playbackController = null;
     let keepAliveSource = null;
     let keepAliveGain = null;
@@ -580,157 +570,6 @@
       return error;
     }
 
-    function createDecodeRealm() {
-      const frame = document.createElement("iframe");
-      frame.hidden = true;
-      frame.tabIndex = -1;
-      frame.setAttribute("aria-hidden", "true");
-      frame.src = "about:blank";
-      document.body.append(frame);
-
-      let context = null;
-      try {
-        const realmWindow = frame.contentWindow;
-        const OfflineContextClass = realmWindow
-          && (realmWindow.OfflineAudioContext || realmWindow.webkitOfflineAudioContext);
-        if (!OfflineContextClass) {
-          throw new Error("A decode-only audio context is unavailable.");
-        }
-        context = new OfflineContextClass(1, 1, AUDIO_SAMPLE_RATE);
-        const realm = {
-          id: ++decodeRealmSerial,
-          frame,
-          context,
-          activeBuffers: 0,
-          activeDecodes: 0,
-          decodedPcmBytes: 0,
-          retired: false,
-          destroyed: false
-        };
-        decodeRealms.add(realm);
-        return realm;
-      } catch (error) {
-        context = null;
-        frame.remove();
-        throw error;
-      }
-    }
-
-    function destroyDecodeRealm(realm) {
-      if (!realm || realm.destroyed) return;
-      realm.destroyed = true;
-      realm.context = null;
-      if (realm.frame) realm.frame.remove();
-      realm.frame = null;
-      decodeRealms.delete(realm);
-      if (activeDecodeRealm === realm) activeDecodeRealm = null;
-      if (standbyDecodeRealm === realm) standbyDecodeRealm = null;
-    }
-
-    function warnDecodeRealmUnavailable(error) {
-      if (decodeRealmWarningLogged) return;
-      decodeRealmWarningLogged = true;
-      logWarning(
-        "Decoder isolation is unavailable; playback will use the main audio context.",
-        error
-      );
-    }
-
-    function createSharedDecodeRealm() {
-      return {
-        id: 0,
-        frame: null,
-        context: audioContext,
-        activeBuffers: 0,
-        activeDecodes: 0,
-        decodedPcmBytes: 0,
-        retired: false,
-        destroyed: false,
-        shared: true
-      };
-    }
-
-    function prepareStandbyDecodeRealm() {
-      if (!running
-          || !activeDecodeRealm
-          || activeDecodeRealm.shared
-          || activeDecodeRealm.decodedPcmBytes < DECODE_REALM_PREWARM_BYTES
-          || standbyDecodeRealm
-          || decodeRealms.size >= MAX_DECODE_REALMS) {
-        return;
-      }
-      try {
-        standbyDecodeRealm = createDecodeRealm();
-      } catch (error) {
-        warnDecodeRealmUnavailable(error);
-      }
-    }
-
-    function initializeDecodeRealms() {
-      decodeRealmWarningLogged = false;
-      try {
-        activeDecodeRealm = createDecodeRealm();
-      } catch (error) {
-        warnDecodeRealmUnavailable(error);
-        activeDecodeRealm = createSharedDecodeRealm();
-        return;
-      }
-      prepareStandbyDecodeRealm();
-    }
-
-    function maybeDisposeDecodeRealm(realm) {
-      if (!realm
-          || realm.destroyed
-          || realm.shared
-          || !realm.retired
-          || realm.activeBuffers
-          || realm.activeDecodes) {
-        return;
-      }
-      destroyDecodeRealm(realm);
-      prepareStandbyDecodeRealm();
-    }
-
-    function getDecodeRealmForNextDecode() {
-      if (!activeDecodeRealm || activeDecodeRealm.destroyed) {
-        initializeDecodeRealms();
-      }
-
-      if (!activeDecodeRealm.shared
-          && activeDecodeRealm.decodedPcmBytes >= DECODE_REALM_PCM_LIMIT_BYTES
-          && standbyDecodeRealm) {
-        const retiredRealm = activeDecodeRealm;
-        activeDecodeRealm = standbyDecodeRealm;
-        standbyDecodeRealm = null;
-        retiredRealm.retired = true;
-        maybeDisposeDecodeRealm(retiredRealm);
-      }
-
-      return activeDecodeRealm;
-    }
-
-    function getDecodedPcmBytes(decodedAudio) {
-      return decodedAudio.length * decodedAudio.numberOfChannels * 4;
-    }
-
-    function releaseDecodedBufferRealm(realm) {
-      if (!realm || realm.destroyed) return;
-      realm.activeBuffers = Math.max(0, realm.activeBuffers - 1);
-      maybeDisposeDecodeRealm(realm);
-    }
-
-    function resetDecodeRealms() {
-      if (activeDecodeRealm && activeDecodeRealm.shared) {
-        activeDecodeRealm.destroyed = true;
-        activeDecodeRealm.context = null;
-      }
-      activeDecodeRealm = null;
-      standbyDecodeRealm = null;
-      for (const realm of Array.from(decodeRealms)) {
-        destroyDecodeRealm(realm);
-      }
-    }
-
     function settleDecodeEntry(entry, method, value) {
       if (entry.settled) return;
       entry.settled = true;
@@ -738,7 +577,7 @@
       entry.timer = null;
       entry.signal.removeEventListener("abort", entry.onAbort);
       entry.encodedAudio = null;
-      entry.realm = null;
+      entry.context = null;
       entry.signal = null;
       entry.onAbort = null;
       entry.resolve = null;
@@ -750,39 +589,27 @@
       while (activeDecodeCount < MAX_CONCURRENT_DECODES && decodeQueue.length) {
         const entry = decodeQueue.shift();
         if (entry.signal.aborted || entry.generation !== decodeGeneration) {
-          entry.realm = null;
+          entry.context = null;
           settleDecodeEntry(entry, entry.reject, abortError());
           continue;
         }
 
         entry.started = true;
         activeDecodeCount += 1;
-        const realm = getDecodeRealmForNextDecode();
-        realm.activeDecodes += 1;
         const encodedAudio = entry.encodedAudio;
+        const context = entry.context;
         entry.encodedAudio = null;
-        entry.realm = realm;
+        entry.context = null;
         entry.timer = window.setTimeout(() => {
           settleDecodeEntry(entry, entry.reject, decodeTimeoutError());
         }, DECODE_TIMEOUT_MS);
         Promise.resolve()
-          .then(() => realm.context.decodeAudioData(encodedAudio))
+          .then(() => context.decodeAudioData(encodedAudio))
           .then(
-            (decodedAudio) => {
-              realm.decodedPcmBytes += getDecodedPcmBytes(decodedAudio);
-              if (realm === activeDecodeRealm) prepareStandbyDecodeRealm();
-              if (entry.settled || realm.destroyed) return;
-              realm.activeBuffers += 1;
-              settleDecodeEntry(entry, entry.resolve, {
-                decodedAudio,
-                realm
-              });
-            },
+            (decodedAudio) => settleDecodeEntry(entry, entry.resolve, decodedAudio),
             (error) => settleDecodeEntry(entry, entry.reject, error)
           )
           .finally(() => {
-            realm.activeDecodes = Math.max(0, realm.activeDecodes - 1);
-            maybeDisposeDecodeRealm(realm);
             if (entry.generation === decodeGeneration) {
               activeDecodeCount = Math.max(0, activeDecodeCount - 1);
               pumpDecodeQueue();
@@ -798,14 +625,15 @@
           return;
         }
 
-        if (!audioContext) {
+        const context = audioContext;
+        if (!context) {
           reject(abortError());
           return;
         }
 
         const entry = {
           encodedAudio,
-          realm: null,
+          context,
           signal,
           resolve,
           reject,
@@ -819,7 +647,7 @@
           if (!entry.started) {
             const index = decodeQueue.indexOf(entry);
             if (index !== -1) decodeQueue.splice(index, 1);
-            entry.realm = null;
+            entry.context = null;
           }
           settleDecodeEntry(entry, reject, abortError());
           if (!entry.started) pumpDecodeQueue();
@@ -834,7 +662,7 @@
       decodeGeneration += 1;
       activeDecodeCount = 0;
       for (const entry of decodeQueue.splice(0)) {
-        entry.realm = null;
+        entry.context = null;
         settleDecodeEntry(entry, entry.reject, abortError());
       }
     }
@@ -1483,95 +1311,15 @@
       return curve;
     }
 
-    function resetAudioParam(parameter, value) {
-      if (!parameter) return;
+    function releasePanner(channel, panner) {
+      if (!panner) return;
       try {
-        parameter.cancelScheduledValues(0);
+        panner.pan.cancelScheduledValues(0);
       } catch {
         // The context may already be closing.
       }
-      try {
-        parameter.value = value;
-      } catch {
-        // The context may already be closing.
-      }
-    }
-
-    function getChannelEffects(channel) {
-      if (channel.panner
-          && channel.delayNode
-          && channel.delayWet
-          && channel.delayFeedback) {
-        return channel.panner;
-      }
-
-      let panner = null;
-      let delayNode = null;
-      let delayWet = null;
-      let delayFeedback = null;
-
-      try {
-        panner = audioContext.createStereoPanner();
-        delayNode = audioContext.createDelay(MAX_DELAY_SECONDS + 0.01);
-        delayWet = audioContext.createGain();
-        delayFeedback = audioContext.createGain();
-        panner.pan.value = 0;
-        delayNode.delayTime.value = 0;
-        delayWet.gain.value = 0;
-        delayFeedback.gain.value = 0;
-        panner.connect(outputGain);
-        panner.connect(delayNode);
-        delayNode.connect(delayWet);
-        delayWet.connect(outputGain);
-        delayNode.connect(delayFeedback);
-        delayFeedback.connect(delayNode);
-        channel.panner = panner;
-        channel.delayNode = delayNode;
-        channel.delayWet = delayWet;
-        channel.delayFeedback = delayFeedback;
-        return panner;
-      } catch (error) {
-        disconnectNode(panner);
-        disconnectNode(delayNode);
-        disconnectNode(delayWet);
-        disconnectNode(delayFeedback);
-        if (channel.panner === panner) channel.panner = null;
-        if (channel.delayNode === delayNode) channel.delayNode = null;
-        if (channel.delayWet === delayWet) channel.delayWet = null;
-        if (channel.delayFeedback === delayFeedback) channel.delayFeedback = null;
-        throw error;
-      }
-    }
-
-    function configureChannelEffects(channel, delaySeconds, pan) {
-      const panner = getChannelEffects(channel);
-      resetAudioParam(panner.pan, pan);
-      resetAudioParam(channel.delayNode.delayTime, delaySeconds || 0);
-      resetAudioParam(channel.delayWet.gain, delaySeconds ? 0.55 : 0);
-      resetAudioParam(
-        channel.delayFeedback.gain,
-        delaySeconds ? DELAY_FEEDBACK : 0
-      );
-      return panner;
-    }
-
-    function deactivateChannelEffects(channel) {
-      if (channel.panner) resetAudioParam(channel.panner.pan, 0);
-      if (channel.delayNode) resetAudioParam(channel.delayNode.delayTime, 0);
-      if (channel.delayWet) resetAudioParam(channel.delayWet.gain, 0);
-      if (channel.delayFeedback) resetAudioParam(channel.delayFeedback.gain, 0);
-    }
-
-    function releaseChannelEffects(channel) {
-      deactivateChannelEffects(channel);
-      disconnectNode(channel.panner);
-      disconnectNode(channel.delayNode);
-      disconnectNode(channel.delayWet);
-      disconnectNode(channel.delayFeedback);
-      channel.panner = null;
-      channel.delayNode = null;
-      channel.delayWet = null;
-      channel.delayFeedback = null;
+      disconnectNode(panner);
+      if (channel.panner === panner) channel.panner = null;
     }
 
     function createPitchRoute(channel, source, pitch, durationSeconds) {
@@ -1647,10 +1395,61 @@
       if (channel.pitchGain === route.gain) channel.pitchGain = null;
     }
 
-    function resetNativeSource(channel, audio, mediaSource) {
+    function createDelayRoute(channel, panner, delaySeconds) {
+      if (!delaySeconds) {
+        panner.connect(outputGain);
+        return null;
+      }
+
+      // A bounded feedback trail reuses one sub-second DelayNode buffer. It does
+      // not allocate a new audio buffer for each repeat.
+      let delayNode = null;
+      let delayWet = null;
+      let delayFeedback = null;
+
+      try {
+        delayNode = audioContext.createDelay(delaySeconds + 0.01);
+        channel.delayNode = delayNode;
+        delayWet = audioContext.createGain();
+        channel.delayWet = delayWet;
+        delayFeedback = audioContext.createGain();
+        channel.delayFeedback = delayFeedback;
+        delayNode.delayTime.value = delaySeconds;
+        delayWet.gain.value = 0.55;
+        delayFeedback.gain.value = DELAY_FEEDBACK;
+        panner.connect(outputGain);
+        panner.connect(delayNode);
+        delayNode.connect(delayWet);
+        delayWet.connect(outputGain);
+        delayNode.connect(delayFeedback);
+        delayFeedback.connect(delayNode);
+        return { delayNode, delayWet, delayFeedback };
+      } catch (error) {
+        disconnectNode(delayNode);
+        disconnectNode(delayWet);
+        disconnectNode(delayFeedback);
+        if (channel.delayNode === delayNode) channel.delayNode = null;
+        if (channel.delayWet === delayWet) channel.delayWet = null;
+        if (channel.delayFeedback === delayFeedback) channel.delayFeedback = null;
+        throw error;
+      }
+    }
+
+    function releaseDelayRoute(channel, route) {
+      if (!route) return;
+      disconnectNode(route.delayNode);
+      disconnectNode(route.delayWet);
+      disconnectNode(route.delayFeedback);
+      if (channel.delayNode === route.delayNode) channel.delayNode = null;
+      if (channel.delayWet === route.delayWet) channel.delayWet = null;
+      if (channel.delayFeedback === route.delayFeedback) channel.delayFeedback = null;
+    }
+
+    function resetNativeSource(channel, audio, mediaSource, panner) {
       if (mediaSource) {
         disconnectNode(mediaSource);
       }
+      releasePanner(channel, panner);
       if (audio) {
         try {
           audio.pause();
@@ -1681,7 +1480,7 @@
       const mediaSource = channel.mediaSource;
       channel.audio = null;
       channel.mediaSource = null;
-      resetNativeSource(channel, audio, mediaSource);
+      resetNativeSource(channel, audio, mediaSource, channel.panner);
     }
 
     function playNative(channel, soundBlob, playbackRate, delaySeconds, pan, panMoves) {
@@ -1691,6 +1490,7 @@
         let audio = null;
         let mediaSource = null;
         let panner = null;
+        let delayRoute = null;
         let tailTimer = null;
         let sourceReleased = false;
         let settled = false;
@@ -1705,7 +1505,7 @@
             audio.removeEventListener("error", onError);
             audio.removeEventListener("loadedmetadata", onMetadata);
           }
-          resetNativeSource(channel, audio, mediaSource);
+          resetNativeSource(channel, audio, mediaSource, panner);
           if (objectUrl) {
             URL.revokeObjectURL(objectUrl);
             objectUrl = null;
@@ -1719,7 +1519,7 @@
           if (tailTimer !== null) window.clearTimeout(tailTimer);
           tailTimer = null;
           releaseSourceOnly();
-          deactivateChannelEffects(channel);
+          releaseDelayRoute(channel, delayRoute);
         };
 
         const finish = (error) => {
@@ -1760,7 +1560,10 @@
           const pool = getNativePool(channel);
           audio = pool.audio;
           mediaSource = pool.mediaSource;
-          panner = configureChannelEffects(channel, delaySeconds, pan);
+          panner = audioContext.createStereoPanner();
+          channel.panner = panner;
+          delayRoute = createDelayRoute(channel, panner, delaySeconds);
+          panner.pan.value = pan;
           mediaSource.connect(panner);
           audio.playbackRate = playbackRate;
           audio.preservesPitch = false;
@@ -1792,10 +1595,10 @@
       const controller = new AbortController();
       let encodedAudio = null;
       let decodedAudio = null;
-      let decodedRealm = null;
       let source = null;
       let panner = null;
       let pitchRoute = null;
+      let delayRoute = null;
       let stopPlayback = null;
       let tailTimer = null;
       let sourceReleased = false;
@@ -1813,10 +1616,7 @@
         if (controller.signal.aborted) throw abortError();
         const decodeTask = decodeAudioLimited(encodedAudio, controller.signal);
         encodedAudio = null;
-        let decodedResult = await decodeTask;
-        decodedAudio = decodedResult.decodedAudio;
-        decodedRealm = decodedResult.realm;
-        decodedResult = null;
+        decodedAudio = await decodeTask;
 
         if (controller.signal.aborted) throw abortError();
 
@@ -1827,7 +1627,7 @@
         }
 
         source = audioContext.createBufferSource();
-        panner = configureChannelEffects(channel, delaySeconds, pan);
+        panner = audioContext.createStereoPanner();
         source.buffer = decodedAudio;
         source.playbackRate.value = playbackRate;
         const estimatedDuration = decodedAudio.duration / playbackRate;
@@ -1845,7 +1645,9 @@
           panMoves
         );
         source.connect(panner);
+        delayRoute = createDelayRoute(channel, panner, delaySeconds);
         channel.source = source;
+        channel.panner = panner;
 
         await new Promise((resolve, reject) => {
           let settled = false;
@@ -1869,9 +1671,8 @@
             disconnectNode(source);
             source.buffer = null;
             if (channel.source === source) channel.source = null;
+            releasePanner(channel, panner);
             decodedAudio = null;
-            releaseDecodedBufferRealm(decodedRealm);
-            decodedRealm = null;
             if (!delaySeconds) {
               finish();
               return;
@@ -1908,18 +1709,18 @@
         if (tailTimer !== null) window.clearTimeout(tailTimer);
         tailTimer = null;
         releasePitchRoute(channel, pitchRoute);
-        deactivateChannelEffects(channel);
+        releaseDelayRoute(channel, delayRoute);
+        releasePanner(channel, panner);
 
         if (channel.source === source) channel.source = null;
         if (channel.controller === controller) channel.controller = null;
         channel.cancel = null;
         stopPlayback = null;
         pitchRoute = null;
+        delayRoute = null;
         panner = null;
         source = null;
         decodedAudio = null;
-        releaseDecodedBufferRealm(decodedRealm);
-        decodedRealm = null;
         encodedAudio = null;
         soundBlob = null;
       }
@@ -2028,7 +1829,14 @@
           released: false
         });
       }
-      deactivateChannelEffects(channel);
+      if (channel.delayNode && channel.delayWet && channel.delayFeedback) {
+        releaseDelayRoute(channel, {
+          delayNode: channel.delayNode,
+          delayWet: channel.delayWet,
+          delayFeedback: channel.delayFeedback
+        });
+      }
+      releasePanner(channel, channel.panner);
     }
 
     function resetInterface() {
@@ -2066,7 +1874,6 @@
           outputSafetyLimiter = null;
         }
         resetDecodeScheduler();
-        resetDecodeRealms();
 
         let contextClosePromise = Promise.resolve();
         if (context && context.state !== "closed") {
@@ -2086,7 +1893,6 @@
         channels.forEach((channel) => {
           channel.task = null;
           releaseNativePool(channel);
-          releaseChannelEffects(channel);
         });
         playbackController = null;
         soundPackFile = null;
@@ -2138,10 +1944,7 @@
         await acquireSoundPack(controller.signal);
         if (controller.signal.aborted || !running) throw abortError();
 
-        const context = new AudioContextClass({
-          latencyHint: "playback",
-          sampleRate: AUDIO_SAMPLE_RATE
-        });
+        const context = new AudioContextClass({ latencyHint: "playback" });
         audioContext = context;
         if (typeof context.createStereoPanner !== "function") {
           throw new Error("Stereo panning is not supported.");
@@ -2166,8 +1969,6 @@
           throw abortError();
         }
 
-        initializeDecodeRealms();
-        logInfo(`Audio engine running at ${context.sampleRate} Hz`);
         startSilentLooper(context);
         context.onstatechange = resumePlaybackContext;
         void requestScreenWakeLock();

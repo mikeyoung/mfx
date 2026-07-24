@@ -2,7 +2,7 @@
 
 const APP_VERSION = "9999.9999.9";
 const SOUND_CACHE_NAME = "csfx-sound-pack-v1-c50b03359543";
-const SHELL_CACHE_NAME = "csfx-shell-f90ed6cc3cc8";
+const SHELL_CACHE_NAME = "csfx-shell-7f5087f685b9";
 const SOUND_CACHE_PREFIX = "csfx-sound-pack-v1-";
 const SHELL_CACHE_PREFIX = "csfx-shell-";
 const LEGACY_SOUND_CACHE_PREFIXES = ["chaotic-sound-effects-"];
