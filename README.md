@@ -6,7 +6,7 @@ A minimal, endless browser sound-collage instrument built from 1,260 sound-effec
 
 ## Versioning
 
-The current release is **9999**. `VERSION` is the single source of truth and is injected into the generated page during the build.
+The current release is **99999**. `VERSION` is the single source of truth and is injected into the generated page during the build.
 
 Versions use a repeated-9 sequence. Version 1 is `9`, version 2 is `99`, version 3 is `999`, and every subsequent code commit appends one more `9` before rebuilding and committing.
 
