@@ -22,7 +22,7 @@ Each new sound independently receives randomized processing:
 - 50% chance of a playback-rate shift between 0.5x and 2x
 - random stereo position, with optional animated panning
 - optional moderate oscillator-based pitch modulation
-- 33% per-track gain followed by one shared dynamic compressor and a final soft safety limiter
+- 33% per-track gain followed by one shared soft limiter with a 0.95 output ceiling
 
 On page load, a full-screen loader shows the sound-pack transfer as a hard-edged, full-height white bar growing across a black background. The large black “preparing sounds” message spans approximately 90% of the screen width above the bar and appears as the white fill reaches it. The controls appear only after both the complete sound library and the PWA app shell have been durably stored for offline use. Playback advances only after the current sound and any delay trail have finished.
 
