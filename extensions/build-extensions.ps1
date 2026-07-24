@@ -243,7 +243,7 @@ $extensionPage = $extensionPage.Replace(
 $extensionPage = [regex]::Replace(
   $extensionPage,
   '(?m)^\s*<p class="offline-note">.*?</p>\r?\n',
-  "    <p class=`"offline-note`">The complete sound library is included and available offline.</p>`r`n"
+  "    <p class=`"offline-note`">The app has been installed and is available offline.</p>`r`n"
 )
 
 if ($extensionPage -match '<script(?![^>]*\bsrc=)') {
