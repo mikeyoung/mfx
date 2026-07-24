@@ -273,9 +273,9 @@
     const SERVICE_WORKER_ACTIVATION_TIMEOUT_MS = 15000;
     const RECENT_SOUND_LIMIT = 12;
     const OUTPUT_VOLUME = 0.33;
-    const OUTPUT_CEILING = 0.95;
-    const LIMITER_KNEE = 0.8;
-    const LIMITER_CURVE_SIZE = 2049;
+    const OUTPUT_CEILING = 0.98;
+    const SAFETY_LIMITER_KNEE = 0.8;
+    const SAFETY_LIMITER_CURVE_SIZE = 2049;
     const DELAY_FEEDBACK = 0.48;
     const DELAY_TAIL_THRESHOLD = 0.001;
     const PAN_MOTION_CHANCE = 0.5;
@@ -315,6 +315,7 @@
     let audioContext = null;
     let outputGain = null;
     let outputLimiter = null;
+    let outputSafetyLimiter = null;
     let startController = null;
     let errorCount = 0;
     let shutdownPromise = null;
@@ -1282,26 +1283,26 @@
       }
     }
 
-    function createLimiterCurve() {
-      const curve = new Float32Array(LIMITER_CURVE_SIZE);
-      const kneeSpan = 1 - LIMITER_KNEE;
+    function createSafetyLimiterCurve() {
+      const curve = new Float32Array(SAFETY_LIMITER_CURVE_SIZE);
+      const kneeSpan = 1 - SAFETY_LIMITER_KNEE;
 
       for (let index = 0; index < curve.length; index += 1) {
         const input = ((index / (curve.length - 1)) * 2) - 1;
         const magnitude = Math.abs(input);
-        if (magnitude <= LIMITER_KNEE) {
+        if (magnitude <= SAFETY_LIMITER_KNEE) {
           curve[index] = input;
           continue;
         }
 
-        const position = (magnitude - LIMITER_KNEE) / kneeSpan;
+        const position = (magnitude - SAFETY_LIMITER_KNEE) / kneeSpan;
         const positionSquared = position * position;
         const positionCubed = positionSquared * position;
         const startWeight = (2 * positionCubed) - (3 * positionSquared) + 1;
         const slopeWeight = positionCubed - (2 * positionSquared) + position;
         const endWeight = (-2 * positionCubed) + (3 * positionSquared);
         const limitedMagnitude =
-          (startWeight * LIMITER_KNEE)
+          (startWeight * SAFETY_LIMITER_KNEE)
           + (slopeWeight * kneeSpan)
           + (endWeight * OUTPUT_CEILING);
         curve[index] = Math.sign(input) * limitedMagnitude;
@@ -1861,14 +1862,16 @@
         audioContext = null;
         disconnectNode(outputGain);
         outputGain = null;
-        if (outputLimiter) {
+        disconnectNode(outputLimiter);
+        outputLimiter = null;
+        if (outputSafetyLimiter) {
           try {
-            outputLimiter.curve = null;
+            outputSafetyLimiter.curve = null;
           } catch {
             // Closing the context still releases the node's internal curve.
           }
-          disconnectNode(outputLimiter);
-          outputLimiter = null;
+          disconnectNode(outputSafetyLimiter);
+          outputSafetyLimiter = null;
         }
         resetDecodeScheduler();
 
@@ -1949,11 +1952,18 @@
 
         outputGain = context.createGain();
         outputGain.gain.value = OUTPUT_VOLUME;
-        outputLimiter = context.createWaveShaper();
-        outputLimiter.curve = createLimiterCurve();
-        outputLimiter.oversample = "none";
+        outputLimiter = context.createDynamicsCompressor();
+        outputLimiter.threshold.value = -3;
+        outputLimiter.knee.value = 6;
+        outputLimiter.ratio.value = 12;
+        outputLimiter.attack.value = 0.003;
+        outputLimiter.release.value = 0.25;
+        outputSafetyLimiter = context.createWaveShaper();
+        outputSafetyLimiter.curve = createSafetyLimiterCurve();
+        outputSafetyLimiter.oversample = "none";
         outputGain.connect(outputLimiter);
-        outputLimiter.connect(context.destination);
+        outputLimiter.connect(outputSafetyLimiter);
+        outputSafetyLimiter.connect(context.destination);
         await waitForAudioStart(context, controller.signal);
         if (controller.signal.aborted || !running || audioContext !== context) {
           throw abortError();
