@@ -175,8 +175,21 @@ foreach ($requiredPath in @(
 }
 
 $appVersion = [System.IO.File]::ReadAllText($versionPath).Trim()
-if ($appVersion -notmatch '^9+$') {
-  throw 'VERSION must contain only one or more 9 digits, such as 9, 99, or 999.'
+if ($appVersion -notmatch '^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,3}$') {
+  throw 'VERSION must contain one to four dot-separated integers without leading zeroes.'
+}
+$hasNonZeroVersionPart = $false
+foreach ($versionPart in $appVersion.Split('.')) {
+  $parsedVersionPart = 0
+  if (-not [int]::TryParse($versionPart, [ref]$parsedVersionPart) -or $parsedVersionPart -gt 65535) {
+    throw 'Each VERSION component must be an integer from 0 through 65535.'
+  }
+  if ($parsedVersionPart -ne 0) {
+    $hasNonZeroVersionPart = $true
+  }
+}
+if (-not $hasNonZeroVersionPart) {
+  throw 'VERSION must contain at least one non-zero component.'
 }
 
 $page = [System.IO.File]::ReadAllText($appPagePath)
